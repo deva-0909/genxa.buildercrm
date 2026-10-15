@@ -41,7 +41,6 @@ export function useLeadAssignment() {
       assignments.forEach((telecallerId, leadId) => {
         const updated = dataStore.updateLead(leadId, {
           assignedTo: telecallerId,
-          status: 'New',
         });
 
         if (updated) {

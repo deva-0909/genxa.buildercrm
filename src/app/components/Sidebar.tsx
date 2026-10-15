@@ -6,15 +6,14 @@ interface SidebarProps {
   userRole: string;
 }
 
-export function Sidebar({ currentModule, setCurrentModule, userRole }: SidebarProps) {
-  const menuItems = [
+export const menuItems = [
     { id: 'management', label: 'Management Dashboard', icon: LayoutDashboard, roles: ['Admin', 'MIS Head'] },
     { id: 'master-setup', label: 'Master Setup', icon: Settings, roles: ['Admin', 'MIS Head'] },
     { id: 'lead-capture', label: 'Lead Capture', icon: Users, roles: ['Admin', 'Digital Team', 'Front Desk'] },
     { id: 'lead-pool', label: 'Lead Pool', icon: UserCheck, roles: ['Admin', 'MIS Head', 'Telecaller', 'Team Leader'] },
     { id: 'telecaller', label: 'Telecaller Dashboard', icon: Phone, roles: ['Telecaller', 'Team Leader', 'Admin'] },
     { id: 'sales', label: 'Sales Dashboard', icon: TrendingUp, roles: ['Sales Executive', 'Team Leader', 'Admin'] },
-    { id: 'site-visits', label: 'Site Visits', icon: Calendar, roles: ['Sales Executive', 'Telecaller', 'Admin'] },
+    { id: 'site-visits', label: 'Site Visits', icon: Calendar, roles: ['Sales Executive', 'Telecaller', 'Team Leader', 'Admin'] },
     { id: 'bookings', label: 'Bookings', icon: Building2, roles: ['Sales Executive', 'CRM Executive', 'Admin'] },
     { id: 'agreements', label: 'Agreements', icon: FileCheck, roles: ['CRM Executive', 'Admin'] },
     { id: 'loans', label: 'Loan Processing', icon: CreditCard, roles: ['CRM Executive', 'Admin'] },
@@ -31,6 +30,7 @@ export function Sidebar({ currentModule, setCurrentModule, userRole }: SidebarPr
     { id: 'notifications', label: 'Notifications', icon: Bell, roles: ['Admin', 'CRM Executive'] },
   ];
 
+export function Sidebar({ currentModule, setCurrentModule, userRole }: SidebarProps) {
   const filteredItems = menuItems.filter(item =>
     item.roles.includes(userRole) || userRole === 'Admin'
   );

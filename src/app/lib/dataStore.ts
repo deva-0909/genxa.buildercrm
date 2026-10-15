@@ -27,7 +27,21 @@ export interface User {
   target: number;
   mobile?: string;
   projectAccess?: string[];
+  reportsTo?: string;
 }
+
+/** The person whose view of the CRM is currently shown (picked in the role switcher). */
+export interface Persona {
+  name: string;
+  role: string;
+}
+
+export const ADMIN_PERSONA: Persona = { name: 'Admin', role: 'Admin' };
+const PERSONA_KEY = 'buildercrm_persona';
+
+/** Roles that see the whole team instead of only their own records. */
+export const isManagerRole = (role: string) =>
+  ['Admin', 'MIS Head', 'Team Leader'].includes(role);
 
 export interface LeadSource {
   id: string;
@@ -186,6 +200,30 @@ class DataStore {
   private listeners = new Set<Listener>();
   private loaded = false;
   private realtimeStarted = false;
+  private persona: Persona = ADMIN_PERSONA;
+
+  // ---------- current persona (role switcher) ----------
+
+  getPersona(): Persona {
+    return this.persona;
+  }
+
+  setPersona(persona: Persona) {
+    this.persona = persona;
+    try { localStorage.setItem(PERSONA_KEY, JSON.stringify(persona)); } catch { /* ignore */ }
+    this.notify();
+  }
+
+  private restorePersona() {
+    try {
+      const raw = localStorage.getItem(PERSONA_KEY);
+      if (!raw) return;
+      const saved = JSON.parse(raw) as Persona;
+      if (saved.role === 'Admin' || this.data.users.some(u => u.name === saved.name && u.role === saved.role)) {
+        this.persona = saved;
+      }
+    } catch { /* ignore */ }
+  }
 
   // ---------- lifecycle ----------
 
@@ -220,6 +258,7 @@ class DataStore {
     });
 
     this.loaded = true;
+    this.restorePersona();
     this.startRealtime();
     this.notify();
   }
@@ -355,7 +394,7 @@ class DataStore {
   assignLeads(leadIds: string[], telecallerId: string): number {
     let count = 0;
     leadIds.forEach(leadId => {
-      if (this.updateLead(leadId, { assignedTo: telecallerId, status: 'New' })) count++;
+      if (this.updateLead(leadId, { assignedTo: telecallerId })) count++;
     });
     return count;
   }
@@ -416,7 +455,7 @@ class DataStore {
       leadsToday: leads.filter(l => new Date(l.createdAt) >= today).length,
       leadsThisMonth: leads.filter(l => new Date(l.createdAt) >= thisMonth).length,
       unassignedLeads: leads.filter(l => !l.assignedTo).length,
-      visitsToday: visits.filter(v => v.date === today.toISOString().split('T')[0]).length,
+      visitsToday: visits.filter(v => v.date === localDate(today)).length,
       visitsThisMonth: visits.filter(v => new Date(v.createdAt) >= thisMonth).length,
       bookingsThisMonth: bookings.filter(b => new Date(b.createdAt) >= thisMonth).length,
       totalRevenue: bookings.reduce((sum, b) => sum + (b.price - b.discount), 0),
@@ -436,4 +475,12 @@ export function getDataStore(): DataStore {
     storeInstance = new DataStore();
   }
   return storeInstance;
+}
+
+/** Calendar date (YYYY-MM-DD) in the user's local time zone, not UTC. */
+export function localDate(d: Date = new Date()): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
 }

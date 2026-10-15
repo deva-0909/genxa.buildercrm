@@ -1,4 +1,5 @@
 // Automated Lead Assignment Engine
+import { getDataStore } from './dataStore';
 
 export interface Lead {
   id: string;
@@ -71,31 +72,31 @@ export class LeadAssignmentEngine {
     // Apply rules in priority order
     let candidates = availableTelecallers;
 
-    for (const rule of this.rules.sort((a, b) => a.priority - b.priority)) {
+    for (const rule of [...this.rules].sort((a, b) => a.priority - b.priority)) {
       if (!rule.enabled) continue;
 
+      let next = candidates;
       switch (rule.type) {
         case 'time':
-          candidates = this.filterByWorkingHours(candidates);
+          next = this.filterByWorkingHours(candidates);
           break;
         case 'project':
-          candidates = this.filterByProject(candidates, lead);
+          next = this.filterByProject(candidates, lead);
           break;
         case 'source':
-          candidates = this.filterBySource(candidates, lead);
+          next = this.filterBySource(candidates, lead);
           break;
         case 'load':
-          candidates = this.filterByLoad(candidates);
+          next = this.filterByLoad(candidates);
           break;
         case 'performance':
-          candidates = this.sortByPerformance(candidates);
+          next = this.sortByPerformance(candidates);
           break;
       }
 
-      if (candidates.length === 0) {
-        // If rule filtered out everyone, use previous candidates
-        break;
-      }
+      // If a rule filters out everyone (e.g. lead arrives after working hours),
+      // skip that rule and keep the previous candidates instead of dropping the lead.
+      if (next.length > 0) candidates = next;
     }
 
     // Return the best candidate or use round-robin if multiple
@@ -350,18 +351,32 @@ export function createDefaultTelecallers(): Telecaller[] {
   ];
 }
 
-// Export singleton instance
-let engineInstance: LeadAssignmentEngine | null = null;
-
+/**
+ * Build the engine from the telecallers in Master Setup. Telecallers are identified
+ * by name (the same value stored in lead.assignedTo), so assigned leads show up on
+ * that telecaller's dashboard. Specialisation and performance settings come from
+ * the defaults above when a name matches, otherwise the telecaller takes any lead.
+ */
 export function getAssignmentEngine(): LeadAssignmentEngine {
-  if (!engineInstance) {
-    engineInstance = new LeadAssignmentEngine(createDefaultTelecallers());
-  }
-  return engineInstance;
-}
-
-export function resetAssignmentEngine(telecallers?: Telecaller[]): void {
-  engineInstance = new LeadAssignmentEngine(
-    telecallers || createDefaultTelecallers()
-  );
+  const store = getDataStore();
+  const defaults = createDefaultTelecallers();
+  const leads = store.getLeads();
+  const telecallers: Telecaller[] = store.getUsers()
+    .filter(u => u.role === 'Telecaller')
+    .map(u => {
+      const preset = defaults.find(d => d.name === u.name);
+      return {
+        id: u.name,
+        name: u.name,
+        role: u.role,
+        status: u.status,
+        currentLoad: leads.filter(l => l.assignedTo === u.name && !['Dead'].includes(l.status)).length,
+        maxLoad: u.target || 50,
+        projectSpecialization: preset?.projectSpecialization ?? [],
+        sourceSpecialization: preset?.sourceSpecialization ?? [],
+        workingHours: preset?.workingHours ?? { start: '09:00', end: '19:00' },
+        performance: preset?.performance ?? { contactRate: 70, conversionRate: 20 },
+      };
+    });
+  return new LeadAssignmentEngine(telecallers);
 }

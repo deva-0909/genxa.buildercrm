@@ -1,10 +1,7 @@
 import { useEffect, useState } from 'react';
-import type { Session } from '@supabase/supabase-js';
-import { Loader2, LogOut } from 'lucide-react';
-import { supabase } from './lib/supabase';
-import { getDataStore } from './lib/dataStore';
-import { LoginScreen } from './components/LoginScreen';
-import { Sidebar } from './components/Sidebar';
+import { Loader2, UserCircle2 } from 'lucide-react';
+import { getDataStore, ADMIN_PERSONA, Persona } from './lib/dataStore';
+import { Sidebar, menuItems } from './components/Sidebar';
 import { MasterSetup } from './components/MasterSetup';
 import { LeadCapture } from './components/LeadCapture';
 import { LeadPool } from './components/LeadPool';
@@ -28,47 +25,60 @@ import { CancellationRefunds } from './components/CancellationRefunds';
 import { PostSalesSupport } from './components/PostSalesSupport';
 import { Toaster } from './components/ui/sonner';
 
+const ROLE_ORDER = ['Team Leader', 'Telecaller', 'Sales Executive', 'CRM Executive', 'Finance', 'MIS Head', 'Sourcing Executive'];
+
+const ROLE_HOME: Record<string, string> = {
+  'Admin': 'management',
+  'MIS Head': 'management',
+  'Team Leader': 'telecaller',
+  'Telecaller': 'telecaller',
+  'Sales Executive': 'sales',
+  'CRM Executive': 'crm',
+  'Finance': 'finance',
+  'Sourcing Executive': 'channel-partner',
+};
+
+/** Home screen for a role, falling back to the first sidebar module it may open. */
+const firstModuleFor = (role: string) =>
+  ROLE_HOME[role] ?? menuItems.find(m => m.roles.includes(role))?.id ?? 'management';
+
 export default function App() {
-  const [session, setSession] = useState<Session | null>(null);
-  const [authReady, setAuthReady] = useState(false);
   const [dataReady, setDataReady] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [, setVersion] = useState(0);
-
   const [currentModule, setCurrentModule] = useState('management');
-  const [userRole, setUserRole] = useState('Admin');
 
-  // Track the signed-in session
-  useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
-      setSession(data.session);
-      setAuthReady(true);
-    });
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => {
-      setSession(s);
-    });
-    return () => sub.subscription.unsubscribe();
-  }, []);
+  const store = getDataStore();
 
-  // Load CRM data once signed in, and re-render whenever it changes
+  // Load CRM data and re-render whenever it (or the selected persona) changes
   useEffect(() => {
-    const store = getDataStore();
-    if (!session) {
-      store.clear();
-      setDataReady(false);
-      return;
-    }
     let cancelled = false;
-    setLoadError(null);
     store.load()
-      .then(() => { if (!cancelled) setDataReady(true); })
+      .then(() => {
+        if (cancelled) return;
+        setCurrentModule(firstModuleFor(store.getPersona().role));
+        setDataReady(true);
+      })
       .catch((err) => { if (!cancelled) setLoadError(err?.message || 'Failed to load data'); });
     const unsubscribe = store.subscribe(() => setVersion(v => v + 1));
     return () => { cancelled = true; unsubscribe(); };
-  }, [session?.user?.id]);
+  }, []);
 
-  const handleSignOut = async () => {
-    await supabase.auth.signOut();
+  const persona = store.getPersona();
+  const userRole = persona.role;
+
+  const switchPersona = (value: string) => {
+    let next: Persona = ADMIN_PERSONA;
+    if (value !== 'Admin') {
+      const user = store.getUsers().find(u => u.id === value);
+      if (user) next = { name: user.name, role: user.role };
+    }
+    store.setPersona(next);
+    // Keep the current screen if the new role can see it, otherwise jump to its home screen
+    const item = menuItems.find(m => m.id === currentModule);
+    if (!(next.role === 'Admin' || item?.roles.includes(next.role))) {
+      setCurrentModule(firstModuleFor(next.role));
+    }
   };
 
   const renderModule = () => {
@@ -98,23 +108,6 @@ export default function App() {
     }
   };
 
-  if (!authReady) {
-    return (
-      <div className="h-screen flex items-center justify-center bg-gray-50">
-        <Loader2 className="w-8 h-8 text-blue-600 animate-spin" />
-      </div>
-    );
-  }
-
-  if (!session) {
-    return (
-      <>
-        <Toaster position="top-right" richColors />
-        <LoginScreen />
-      </>
-    );
-  }
-
   if (!dataReady) {
     return (
       <div className="h-screen flex flex-col items-center justify-center gap-3 bg-gray-50">
@@ -122,7 +115,6 @@ export default function App() {
           <>
             <p className="text-red-600">Could not load CRM data: {loadError}</p>
             <button onClick={() => window.location.reload()} className="px-4 py-2 bg-blue-600 text-white rounded-lg">Retry</button>
-            <button onClick={handleSignOut} className="text-sm text-gray-600 hover:underline">Sign out</button>
           </>
         ) : (
           <>
@@ -134,6 +126,11 @@ export default function App() {
     );
   }
 
+  const users = store.getUsers();
+  const selectedUserId = persona.role === 'Admin'
+    ? 'Admin'
+    : users.find(u => u.name === persona.name && u.role === persona.role)?.id ?? 'Admin';
+
   return (
     <div className="flex h-screen bg-gray-50">
       <Toaster position="top-right" richColors />
@@ -144,37 +141,38 @@ export default function App() {
       />
       <div className="flex-1 flex flex-col overflow-hidden">
         <header className="bg-white border-b border-gray-200 px-6 py-4">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-4">
             <div>
               <h1 className="text-gray-900">Real Estate CRM System</h1>
               <p className="text-gray-500 text-sm">Complete Lead-to-Possession Management</p>
             </div>
-            <div className="flex items-center gap-4">
-              <select
-                value={userRole}
-                onChange={(e) => setUserRole(e.target.value)}
-                className="px-4 py-2 border border-gray-300 rounded-lg text-sm"
-              >
-                <option value="Admin">Admin</option>
-                <option value="MIS Head">MIS Head</option>
-                <option value="Telecaller">Telecaller</option>
-                <option value="Team Leader">Team Leader</option>
-                <option value="Sales Executive">Sales Executive</option>
-                <option value="CRM Executive">CRM Executive</option>
-                <option value="Finance">Finance</option>
-                <option value="Sourcing Executive">Sourcing Executive</option>
-              </select>
+            <div className="flex items-center gap-3">
+              <UserCircle2 className="w-8 h-8 text-blue-600" />
               <div className="text-right">
-                <div className="text-sm text-gray-600">Role: {userRole}</div>
-                <div className="text-xs text-gray-400">{session.user.email}</div>
+                <label htmlFor="persona" className="block text-xs text-gray-500">Viewing as</label>
+                <select
+                  id="persona"
+                  value={selectedUserId}
+                  onChange={(e) => switchPersona(e.target.value)}
+                  className="px-3 py-1.5 border border-gray-300 rounded-lg text-sm max-w-[260px]"
+                >
+                  <option value="Admin">Admin (full access)</option>
+                  {ROLE_ORDER.map(role => {
+                    const people = users.filter(u => u.role === role);
+                    if (people.length === 0) return null;
+                    return (
+                      <optgroup key={role} label={role}>
+                        {people.map(u => (
+                          <option key={u.id} value={u.id}>
+                            {u.name}{u.status === 'Inactive' ? ' (inactive)' : ''}
+                          </option>
+                        ))}
+                      </optgroup>
+                    );
+                  })}
+                </select>
               </div>
-              <button
-                onClick={handleSignOut}
-                title="Sign out"
-                className="p-2 text-gray-500 hover:text-gray-900 hover:bg-gray-100 rounded-lg"
-              >
-                <LogOut className="w-5 h-5" />
-              </button>
+              <span className="hidden md:inline-flex px-2 py-1 rounded text-xs bg-blue-50 text-blue-700">{userRole}</span>
             </div>
           </div>
         </header>

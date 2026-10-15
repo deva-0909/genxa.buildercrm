@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { X, CheckCircle } from 'lucide-react';
-import { getDataStore } from '../lib/dataStore';
+import { getDataStore, localDate } from '../lib/dataStore';
 import { toast } from 'sonner';
 
 interface CreateBookingDialogProps {
@@ -27,12 +27,12 @@ export function CreateBookingDialog({
     price: 0,
     discount: 0,
     tokenAmount: 0,
-    salesExec: ''
+    salesExec: getDataStore().getPersona().role === 'Sales Executive' ? getDataStore().getPersona().name : ''
   });
 
   const dataStore = getDataStore();
   const projects = dataStore.getProjects();
-  const salesExecs = dataStore.getUsers().filter(u => u.role === 'Sales Executive');
+  const salesExecs = dataStore.getUsers().filter(u => u.role === 'Sales Executive' && u.status === 'Active');
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -61,7 +61,7 @@ export function CreateBookingDialog({
       totalPaid: formData.tokenAmount,
       stage: 'Token Paid',
       salesExec: formData.salesExec,
-      bookingDate: new Date().toISOString().split('T')[0]
+      bookingDate: localDate()
     });
 
     // Update lead status if leadId provided

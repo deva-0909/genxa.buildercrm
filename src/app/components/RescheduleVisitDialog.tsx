@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { X, Calendar, Clock, AlertCircle } from 'lucide-react';
 import { toast } from 'sonner';
-import { getDataStore } from '../lib/dataStore';
+import { getDataStore, localDate } from '../lib/dataStore';
 
 interface RescheduleVisitDialogProps {
   visit: any;
@@ -92,7 +92,7 @@ export function RescheduleVisitDialog({ visit, onClose, onSuccess }: RescheduleV
                   className="w-full pl-10 pr-3 py-2 border border-gray-300 rounded-lg"
                   value={formData.newDate}
                   onChange={(e) => setFormData({...formData, newDate: e.target.value})}
-                  min={new Date().toISOString().split('T')[0]}
+                  min={localDate()}
                 />
               </div>
             </div>

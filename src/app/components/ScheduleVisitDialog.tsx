@@ -8,6 +8,7 @@ interface ScheduleVisitDialogProps {
   customerName?: string;
   customerMobile?: string;
   project?: string;
+  telecaller?: string;
   onClose: () => void;
   onSuccess: () => void;
 }
@@ -17,16 +18,18 @@ export function ScheduleVisitDialog({
   customerName,
   customerMobile,
   project,
+  telecaller,
   onClose,
   onSuccess
 }: ScheduleVisitDialogProps) {
+  const persona = getDataStore().getPersona();
   const [formData, setFormData] = useState({
     customer: customerName || '',
     mobile: customerMobile || '',
     project: project || '',
     date: '',
     time: '',
-    telecaller: '',
+    telecaller: telecaller || (persona.role === 'Telecaller' ? persona.name : ''),
     salesExec: '',
     notes: ''
   });

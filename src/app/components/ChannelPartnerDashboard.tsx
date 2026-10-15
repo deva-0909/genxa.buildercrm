@@ -1,7 +1,7 @@
 import { Briefcase, Users, TrendingUp, DollarSign, Phone, Mail, MapPin, Star } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { useState } from 'react';
-import { getDataStore } from '../lib/dataStore';
+import { getDataStore, localDate } from '../lib/dataStore';
 import { OnboardCPDialog } from './OnboardCPDialog';
 import { CPProfileDialog } from './CPProfileDialog';
 import { ProcessCommissionDialog } from './ProcessCommissionDialog';
@@ -125,7 +125,7 @@ export function ChannelPartnerDashboard() {
       remarks: formData.remarks,
       status: 'Active',
       rating: 0,
-      onboardedDate: new Date().toISOString().split('T')[0]
+      onboardedDate: localDate()
     });
 
     toast.success(`Channel Partner ${cp.id} onboarded successfully!`);

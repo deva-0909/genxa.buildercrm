@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { X, Lock, AlertCircle } from 'lucide-react';
-import { getDataStore } from '../lib/dataStore';
+import { getDataStore, localDate } from '../lib/dataStore';
 import { toast } from 'sonner';
 
 interface BlockUnitDialogProps {
@@ -56,8 +56,8 @@ export function BlockUnitDialog({ onClose, onSuccess }: BlockUnitDialogProps) {
       unit: formData.unit,
       customer: formData.customer,
       salesExec: formData.salesExec,
-      blockedDate: today.toISOString().split('T')[0],
-      expiryDate: expiry.toISOString().split('T')[0],
+      blockedDate: localDate(today),
+      expiryDate: localDate(expiry),
       status: 'Active',
       notes: formData.notes
     });

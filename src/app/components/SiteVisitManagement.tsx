@@ -1,6 +1,6 @@
 import { Calendar, MapPin, User, Phone, Clock, CheckCircle, AlertCircle } from 'lucide-react';
 import { useState, useEffect } from 'react';
-import { getDataStore, SiteVisit } from '../lib/dataStore';
+import { getDataStore, SiteVisit, localDate } from '../lib/dataStore';
 import { ScheduleVisitDialog } from './ScheduleVisitDialog';
 import { RescheduleVisitDialog } from './RescheduleVisitDialog';
 import { LogVisitExecutionDialog } from './LogVisitExecutionDialog';
@@ -29,7 +29,7 @@ export function SiteVisitManagement() {
     const allVisits = dataStore.getVisits();
     setVisits([...allVisits]);
 
-    const today = new Date().toISOString().split('T')[0];
+    const today = localDate();
     const todayVisits = allVisits.filter(v => v.date === today);
     const confirmed = allVisits.filter(v => v.status === 'Confirmed');
     const pending = allVisits.filter(v => v.status === 'Scheduled' && !v.confirmationSent);

@@ -14,7 +14,7 @@ export function AssignLeadDialog({ lead, onClose, onSuccess }: AssignLeadDialogP
   const dataStore = getDataStore();
 
   // Get telecallers for assignment
-  const telecallers = dataStore.getUsers().filter(u => u.role === 'Telecaller');
+  const telecallers = dataStore.getUsers().filter(u => u.role === 'Telecaller' && u.status === 'Active');
 
   const handleAssign = () => {
     if (!selectedUser) {
@@ -31,7 +31,6 @@ export function AssignLeadDialog({ lead, onClose, onSuccess }: AssignLeadDialogP
     // Update lead assignment
     dataStore.updateLead(lead.id, {
       assignedTo: user.name,
-      status: 'New'
     });
 
     toast.success(`Lead ${lead.id} assigned to ${user.name}`);
@@ -127,7 +126,7 @@ export function AssignLeadDialog({ lead, onClose, onSuccess }: AssignLeadDialogP
           {/* Info Box */}
           <div className="p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
             <p className="text-sm text-yellow-800">
-              <strong>Note:</strong> The lead will be assigned to the selected telecaller and marked as "New" status.
+              <strong>Note:</strong> The lead will be assigned to the selected telecaller; its current status is kept.
               The telecaller will be notified via SMS/Email.
             </p>
           </div>

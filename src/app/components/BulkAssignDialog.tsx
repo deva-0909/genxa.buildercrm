@@ -13,7 +13,7 @@ export function BulkAssignDialog({ selectedLeads, onClose, onSuccess }: BulkAssi
   const [selectedUser, setSelectedUser] = useState('');
   const dataStore = getDataStore();
 
-  const telecallers = dataStore.getUsers().filter(u => u.role === 'Telecaller');
+  const telecallers = dataStore.getUsers().filter(u => u.role === 'Telecaller' && u.status === 'Active');
 
   const handleBulkAssign = () => {
     if (!selectedUser) {
@@ -31,7 +31,6 @@ export function BulkAssignDialog({ selectedLeads, onClose, onSuccess }: BulkAssi
     selectedLeads.forEach(lead => {
       dataStore.updateLead(lead.id, {
         assignedTo: user.name,
-        status: 'New'
       });
     });
 

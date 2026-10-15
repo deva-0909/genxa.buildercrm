@@ -1,3 +1,4 @@
+import { localDate } from '../lib/dataStore';
 import { useState } from 'react';
 import { X, Save } from 'lucide-react';
 import { toast } from 'sonner';
@@ -118,7 +119,7 @@ export function UpdateSalesLeadDialog({ lead, onClose, onSuccess }: UpdateSalesL
                 className="w-full px-3 py-2 border border-gray-300 rounded-lg"
                 value={formData.nextActionDate}
                 onChange={(e) => setFormData({...formData, nextActionDate: e.target.value})}
-                min={new Date().toISOString().split('T')[0]}
+                min={localDate()}
               />
             </div>
 

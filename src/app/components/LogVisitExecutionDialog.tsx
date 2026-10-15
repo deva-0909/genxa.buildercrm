@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { X, CheckCircle } from 'lucide-react';
 import { toast } from 'sonner';
-import { getDataStore } from '../lib/dataStore';
+import { getDataStore, localDate } from '../lib/dataStore';
 
 interface LogVisitExecutionDialogProps {
   visit?: any;
@@ -221,7 +221,7 @@ export function LogVisitExecutionDialog({ visit, onClose, onSuccess }: LogVisitE
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg"
                   value={formData.revisitDate}
                   onChange={(e) => setFormData({...formData, revisitDate: e.target.value})}
-                  min={new Date().toISOString().split('T')[0]}
+                  min={localDate()}
                 />
               </div>
             )}

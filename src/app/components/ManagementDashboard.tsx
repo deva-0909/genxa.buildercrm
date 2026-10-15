@@ -1,25 +1,43 @@
 import { TrendingUp, Users, Calendar, Building2, DollarSign, Phone, CheckCircle, Target } from 'lucide-react';
+import { getDataStore, localDate } from '../lib/dataStore';
 import { BarChart, Bar, LineChart, Line, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 
 export function ManagementDashboard() {
+  const store = getDataStore();
+  const leads = store.getLeads();
+  const visits = store.getVisits();
+  const bookings = store.getBookings();
+  const sources = store.getSources();
+
+  const pct = (n: number, d: number) => (d ? (n / d) * 100 : 0);
+  const contactedCount = leads.filter(l => (l.callAttempts || 0) > 0 || l.status !== 'New').length;
+  const qualifiedCount = leads.filter(l => ['Qualified', 'Visit Scheduled'].includes(l.status)).length + bookings.length;
+  const visitLeadIds = new Set(visits.filter(v => v.status !== 'Cancelled').map(v => v.leadId));
+  const completedVisits = visits.filter(v => v.status === 'Completed').length;
+  const revenue = bookings.reduce((s, b) => s + (b.price - b.discount), 0);
+  const marketingSpend = leads.reduce((s, l) => s + (sources.find(src => src.name === l.source)?.costPerLead || 0), 0);
+  const unassigned = leads.filter(l => !l.assignedTo).length;
+  const todayStr = localDate();
+  const overdue = leads.filter(l => l.nextFollowUp && l.nextFollowUp.slice(0, 10) < todayStr && l.status !== 'Dead').length;
+
   const kpiCards = [
-    { label: 'Total Leads', value: '2,847', change: '+12.5%', trend: 'up', icon: Users, color: 'blue' },
-    { label: 'Site Visits', value: '486', change: '+8.2%', trend: 'up', icon: Calendar, color: 'green' },
-    { label: 'Bookings', value: '127', change: '+15.3%', trend: 'up', icon: Building2, color: 'purple' },
-    { label: 'Revenue (₹Cr)', value: '45.6', change: '+22.1%', trend: 'up', icon: DollarSign, color: 'orange' },
-    { label: 'Contact Rate', value: '73%', change: '+3.2%', trend: 'up', icon: Phone, color: 'cyan' },
-    { label: 'Conversion Rate', value: '4.5%', change: '+0.8%', trend: 'up', icon: Target, color: 'pink' },
-    { label: 'Avg Response Time', value: '8 min', change: '-15%', trend: 'up', icon: CheckCircle, color: 'indigo' },
-    { label: 'CAC (₹)', value: '12,450', change: '-5.2%', trend: 'up', icon: TrendingUp, color: 'red' },
+    { label: 'Total Leads', value: leads.length.toLocaleString('en-IN'), change: `${unassigned} unassigned`, trend: 'up', icon: Users, color: 'blue' },
+    { label: 'Site Visits', value: String(visits.length), change: `${completedVisits} completed`, trend: 'up', icon: Calendar, color: 'green' },
+    { label: 'Bookings', value: String(bookings.length), change: `${pct(bookings.length, completedVisits).toFixed(0)}% of completed visits`, trend: 'up', icon: Building2, color: 'purple' },
+    { label: 'Revenue (₹Cr)', value: (revenue / 10000000).toFixed(2), change: `Avg ₹${bookings.length ? (revenue / bookings.length / 100000).toFixed(1) : 0}L / booking`, trend: 'up', icon: DollarSign, color: 'orange' },
+    { label: 'Contact Rate', value: `${pct(contactedCount, leads.length).toFixed(0)}%`, change: 'Leads called at least once', trend: 'up', icon: Phone, color: 'cyan' },
+    { label: 'Conversion Rate', value: `${pct(bookings.length, leads.length).toFixed(1)}%`, change: 'Lead → booking', trend: 'up', icon: Target, color: 'pink' },
+    { label: 'Overdue Follow-ups', value: String(overdue), change: 'Past promised call-back', trend: 'up', icon: CheckCircle, color: 'indigo' },
+    { label: 'CAC (₹)', value: bookings.length ? Math.round(marketingSpend / bookings.length).toLocaleString('en-IN') : '—', change: `Spend ₹${(marketingSpend / 1000).toFixed(1)}k on paid leads`, trend: 'up', icon: TrendingUp, color: 'red' },
   ];
 
   const funnelData = [
-    { stage: 'Leads', count: 2847, conversion: 100 },
-    { stage: 'Contacted', count: 2078, conversion: 73 },
-    { stage: 'Qualified', count: 1254, conversion: 44 },
-    { stage: 'Site Visit', count: 486, conversion: 17 },
-    { stage: 'Proposal', count: 247, conversion: 8.7 },
-    { stage: 'Booking', count: 127, conversion: 4.5 },
+    { stage: 'Leads', count: leads.length },
+    { stage: 'Contacted', count: contactedCount },
+    { stage: 'Qualified', count: qualifiedCount },
+    { stage: 'Site Visit', count: visitLeadIds.size },
+    { stage: 'Visit Done', count: completedVisits },
+    { stage: 'Booking', count: bookings.length },
   ];
 
   const monthlyTrend = [
@@ -31,19 +49,29 @@ export function ManagementDashboard() {
     { month: 'Dec', leads: 600, visits: 95, bookings: 23, revenue: 8.1 },
   ];
 
-  const sourceData = [
-    { name: 'Digital Marketing', value: 1245, color: '#3b82f6' },
-    { name: 'Channel Partners', value: 856, color: '#8b5cf6' },
-    { name: 'Walk-In', value: 428, color: '#10b981' },
-    { name: 'Referrals', value: 318, color: '#f59e0b' },
-  ];
+  const sourceGroup = (src: string) =>
+    /^CP\d|channel/i.test(src) ? 'Channel Partners'
+      : /walk/i.test(src) ? 'Walk-In'
+      : /housing|magic|99acres/i.test(src) ? 'Portals'
+      : /ads|google|facebook/i.test(src) ? 'Digital Marketing'
+      : 'Other';
+  const sourceColors: Record<string, string> = {
+    'Digital Marketing': '#3b82f6', 'Channel Partners': '#8b5cf6', 'Walk-In': '#10b981', 'Portals': '#f59e0b', 'Other': '#94a3b8',
+  };
+  const sourceData = Object.entries(
+    leads.reduce<Record<string, number>>((acc, l) => { const g = sourceGroup(l.source || ''); acc[g] = (acc[g] || 0) + 1; return acc; }, {})
+  ).map(([name, value]) => ({ name, value, color: sourceColors[name] }));
 
-  const projectPerformance = [
-    { project: 'Skyline Heights', leads: 845, visits: 156, bookings: 42, revenue: 15.2 },
-    { project: 'Green Valley', leads: 623, visits: 118, bookings: 35, revenue: 12.8 },
-    { project: 'Ocean View', leads: 756, visits: 142, bookings: 28, revenue: 10.5 },
-    { project: 'Metro Plaza', leads: 623, visits: 70, bookings: 22, revenue: 7.1 },
-  ];
+  const projectPerformance = store.getProjects().map(p => {
+    const pb = bookings.filter(b => b.project === p.name);
+    return {
+      project: p.name,
+      leads: leads.filter(l => l.project === p.name).length,
+      visits: visits.filter(v => v.project === p.name).length,
+      bookings: pb.length,
+      revenue: +(pb.reduce((s, b) => s + (b.price - b.discount), 0) / 10000000).toFixed(2),
+    };
+  });
 
   const getColorClasses = (color: string) => {
     const colors: Record<string, { bg: string; text: string; icon: string }> = {
@@ -77,7 +105,7 @@ export function ManagementDashboard() {
                 <div>
                   <p className="text-sm text-gray-600">{kpi.label}</p>
                   <p className="text-gray-900 mt-2">{kpi.value}</p>
-                  <p className={`text-sm mt-1 ${colors.text}`}>{kpi.change} vs last month</p>
+                  <p className={`text-sm mt-1 ${colors.text}`}>{kpi.change}</p>
                 </div>
                 <div className={`p-3 rounded-lg ${colors.bg}`}>
                   <Icon className={`w-6 h-6 ${colors.icon}`} />
@@ -91,7 +119,7 @@ export function ManagementDashboard() {
       {/* Funnel Visualization */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div className="bg-white p-6 rounded-lg border border-gray-200">
-          <h3 className="text-gray-900 mb-4">Sales Funnel - Current Month</h3>
+          <h3 className="text-gray-900 mb-4">Sales Funnel - Live</h3>
           <ResponsiveContainer width="100%" height={300}>
             <BarChart data={funnelData}>
               <CartesianGrid strokeDasharray="3 3" />
@@ -105,15 +133,15 @@ export function ManagementDashboard() {
           <div className="mt-4 grid grid-cols-3 gap-4 text-center">
             <div>
               <div className="text-xs text-gray-500">Lead→Visit</div>
-              <div className="text-gray-900">17%</div>
+              <div className="text-gray-900">{pct(visitLeadIds.size, leads.length).toFixed(1)}%</div>
             </div>
             <div>
               <div className="text-xs text-gray-500">Visit→Booking</div>
-              <div className="text-gray-900">26.1%</div>
+              <div className="text-gray-900">{pct(bookings.length, completedVisits).toFixed(1)}%</div>
             </div>
             <div>
               <div className="text-xs text-gray-500">Overall Conv.</div>
-              <div className="text-gray-900">4.5%</div>
+              <div className="text-gray-900">{pct(bookings.length, leads.length).toFixed(1)}%</div>
             </div>
           </div>
         </div>
@@ -144,7 +172,7 @@ export function ManagementDashboard() {
 
       {/* Monthly Trends */}
       <div className="bg-white p-6 rounded-lg border border-gray-200">
-        <h3 className="text-gray-900 mb-4">6-Month Performance Trends</h3>
+        <h3 className="text-gray-900 mb-4">6-Month Performance Trends <span className="text-xs text-gray-400">(sample data)</span></h3>
         <ResponsiveContainer width="100%" height={300}>
           <LineChart data={monthlyTrend}>
             <CartesianGrid strokeDasharray="3 3" />
@@ -182,7 +210,7 @@ export function ManagementDashboard() {
                   <td className="text-right py-3 px-4 text-gray-600">{project.visits}</td>
                   <td className="text-right py-3 px-4 text-gray-600">{project.bookings}</td>
                   <td className="text-right py-3 px-4 text-gray-900">
-                    {((project.bookings / project.leads) * 100).toFixed(1)}%
+                    {pct(project.bookings, project.leads).toFixed(1)}%
                   </td>
                   <td className="text-right py-3 px-4 text-gray-900">{project.revenue}</td>
                 </tr>
@@ -195,7 +223,7 @@ export function ManagementDashboard() {
       {/* Lead & Lag Indicators */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div className="bg-white p-6 rounded-lg border border-gray-200">
-          <h3 className="text-gray-900 mb-4">Lead Indicators (Predictive)</h3>
+          <h3 className="text-gray-900 mb-4">Lead Indicators (Predictive) <span className="text-xs text-gray-400">(sample data)</span></h3>
           <div className="space-y-4">
             <div className="flex justify-between items-center pb-4 border-b border-gray-100">
               <span className="text-gray-600">New Lead Velocity</span>
@@ -221,7 +249,7 @@ export function ManagementDashboard() {
         </div>
 
         <div className="bg-white p-6 rounded-lg border border-gray-200">
-          <h3 className="text-gray-900 mb-4">Lag Indicators (Outcome)</h3>
+          <h3 className="text-gray-900 mb-4">Lag Indicators (Outcome) <span className="text-xs text-gray-400">(sample data)</span></h3>
           <div className="space-y-4">
             <div className="flex justify-between items-center pb-4 border-b border-gray-100">
               <span className="text-gray-600">Monthly Bookings</span>

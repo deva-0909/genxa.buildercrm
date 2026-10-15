@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { X, Briefcase } from 'lucide-react';
-import { getDataStore } from '../lib/dataStore';
+import { getDataStore, localDate } from '../lib/dataStore';
 import { toast } from 'sonner';
 
 interface OnboardCPDialogProps {
@@ -57,7 +57,7 @@ export function OnboardCPDialog({ onClose, onSuccess }: OnboardCPDialogProps) {
       remarks: formData.remarks,
       status: 'Active',
       rating: 0,
-      onboardedDate: new Date().toISOString().split('T')[0]
+      onboardedDate: localDate()
     });
 
     toast.success(`Channel Partner ${cp.id} onboarded successfully!`);

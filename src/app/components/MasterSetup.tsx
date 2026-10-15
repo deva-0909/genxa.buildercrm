@@ -19,12 +19,15 @@ export function MasterSetup() {
     { project: 'Ocean View', unitType: '2 BHK', basePrice: 8200000, sqft: 1050, status: 'Active' },
   ];
 
-  const targets = [
-    { user: 'Rajesh Kumar', role: 'Telecaller', monthly: 50, weekly: 12, daily: 3 },
-    { user: 'Priya Sharma', role: 'Sales Executive', monthly: 8, weekly: 2, daily: 1 },
-    { user: 'Sneha Reddy', role: 'Telecaller', monthly: 50, weekly: 12, daily: 3 },
-    { user: 'Vikram Singh', role: 'Sales Executive', monthly: 8, weekly: 2, daily: 1 },
-  ];
+  const targets = users
+    .filter(u => u.target > 0 && ['Telecaller', 'Sales Executive', 'Team Leader', 'CRM Executive', 'Sourcing Executive'].includes(u.role))
+    .map(u => ({
+      user: u.name,
+      role: u.role,
+      monthly: u.target,
+      weekly: Math.max(1, Math.round(u.target / 4)),
+      daily: Math.max(1, Math.round(u.target / 22)),
+    }));
 
   const tabs = [
     { id: 'projects', label: 'Projects & Units', icon: Building2 },
@@ -156,7 +159,7 @@ export function MasterSetup() {
                     <td className="py-4 px-6 text-gray-600">{user.email}</td>
                     <td className="text-center py-4 px-6 text-gray-600">{user.target}</td>
                     <td className="text-center py-4 px-6">
-                      <span className="inline-flex px-2 py-1 rounded text-xs bg-green-100 text-green-700">
+                      <span className={`inline-flex px-2 py-1 rounded text-xs ${user.status === 'Active' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
                         {user.status}
                       </span>
                     </td>

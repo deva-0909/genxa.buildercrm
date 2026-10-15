@@ -1,3 +1,4 @@
+import { localDate } from '../lib/dataStore';
 import { useState } from 'react';
 import { X, Send, CheckCircle } from 'lucide-react';
 import { toast } from 'sonner';
@@ -154,7 +155,7 @@ export function SendProposalDialog({ lead, onClose, onSuccess }: SendProposalDia
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg"
                   value={formData.validUntil}
                   onChange={(e) => setFormData({...formData, validUntil: e.target.value})}
-                  min={new Date().toISOString().split('T')[0]}
+                  min={localDate()}
                 />
               </div>
             </div>

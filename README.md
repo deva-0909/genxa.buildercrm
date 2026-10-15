@@ -36,6 +36,23 @@ Channel Partners. The remaining modules (Agreements, Loans, Payments, Inventory,
 Documentation, Possession, Cancellations, Support, Notifications, Reports, Finance,
 Management/CRM dashboards) still show the sample data from the Figma design.
 
-## Users
-Staff sign in with email + password (Supabase Auth). Add users in the Supabase dashboard →
-Authentication → Users → "Add user".
+## Access (demo mode)
+There is no login. A "Viewing as" switcher in the header lets you view the CRM as Admin or as any
+team member (telecallers, sales executives, team leader, CRM, finance, MIS, sourcing). Telecallers
+and sales executives see only their own leads and visits; Admin, MIS Head and Team Leader see the team.
+
+**Security note:** the database accepts reads/writes from anyone with the site URL (anon RLS policies
+`demo_anon_*`). Use sample data only. Before real customer data goes in, restore sign-in and drop the
+`demo_anon_*` policies.
+
+## Demo scenarios in the seed data
+- Rajesh Kumar — high performer, heavy load, today's visits fixed
+- Sneha Reddy — balanced pipeline, some dead leads after 6 attempts
+- Pooja Nair — new joiner, untouched leads breaching the 15-minute SLA
+- Arjun Mehta — multiple overdue follow-ups (incl. hot leads)
+- Kavita Joshi — inactive (on leave) with orphaned leads needing reassignment
+- Priya Sharma — top closer (3 bookings incl. fully paid)
+- Vikram Singh — visits today, a no-show, booking in documentation
+- Rohit Desai — cancellations and a "not interested" visit, zero bookings
+- Neha Kapoor — blocked unit expiring today, agreement pending
+- Unassigned leads, CP bulk-upload leads and a duplicate-mobile lead in the Lead Pool

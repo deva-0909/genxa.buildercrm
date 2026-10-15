@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Search, Filter, User, Phone, Mail, MapPin, Calendar, Tag, Zap, Settings, RefreshCw } from 'lucide-react';
-import { getDataStore } from '../lib/dataStore';
+import { getDataStore, localDate } from '../lib/dataStore';
 import { useLeadAssignment } from '../hooks/useLeadAssignment';
 import { LeadDetailsDialog } from './LeadDetailsDialog';
 import { AssignLeadDialog } from './AssignLeadDialog';
@@ -20,7 +20,16 @@ export function LeadPool() {
   const [, setRefreshKey] = useState(0);
 
   const dataStore = getDataStore();
-  const leads = dataStore.getLeads();
+  const persona = dataStore.getPersona();
+  // Telecallers only see their own leads; managers see the whole pool
+  const allLeads = dataStore.getLeads();
+  const leads = persona.role === 'Telecaller'
+    ? allLeads.filter(l => l.assignedTo === persona.name)
+    : allLeads;
+  const inactiveOwners = new Set(dataStore.getUsers().filter(u => u.status === 'Inactive').map(u => u.name));
+  const todayStr = localDate();
+  const isOverdue = (l: any) => !!l.nextFollowUp && l.nextFollowUp.slice(0, 10) < todayStr && l.status !== 'Dead';
+  const mobileCounts = allLeads.reduce<Record<string, number>>((acc, l) => { acc[l.mobile] = (acc[l.mobile] || 0) + 1; return acc; }, {});
   const {
     isAssigning,
     autoAssignLeads,
@@ -29,7 +38,7 @@ export function LeadPool() {
 
   const statusCounts = {
     all: leads.length,
-    unassigned: leads.filter(l => (l.status as string) === 'Unassigned').length,
+    unassigned: leads.filter(l => !l.assignedTo).length,
     new: leads.filter(l => l.status === 'New').length,
     contacted: leads.filter(l => l.status === 'Contacted').length,
     qualified: leads.filter(l => l.status === 'Qualified').length,
@@ -37,7 +46,8 @@ export function LeadPool() {
   };
 
   const filteredLeads = leads.filter(lead => {
-    const matchesStatus = filterStatus === 'all' || lead.status.toLowerCase().replace('-', '') === filterStatus;
+    const matchesStatus = filterStatus === 'all'
+      || (filterStatus === 'unassigned' ? !lead.assignedTo : lead.status.toLowerCase().replace('-', '') === filterStatus);
     const matchesSearch = searchQuery === '' ||
       lead.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
       lead.mobile.includes(searchQuery) ||
@@ -273,6 +283,11 @@ export function LeadPool() {
                   </td>
                   <td className="py-4 px-4 text-sm text-gray-600">
                     {lead.assignedTo || <span className="text-red-600">Not Assigned</span>}
+                    {lead.assignedTo && inactiveOwners.has(lead.assignedTo) && (
+                      <div className="text-xs text-red-600">Owner inactive – reassign</div>
+                    )}
+                    {isOverdue(lead) && <div className="text-xs text-orange-600">Follow-up overdue</div>}
+                    {mobileCounts[lead.mobile] > 1 && <div className="text-xs text-purple-600">Duplicate mobile</div>}
                   </td>
                   <td className="py-4 px-4">
                     <div className="flex items-center gap-1 text-xs text-gray-500">
