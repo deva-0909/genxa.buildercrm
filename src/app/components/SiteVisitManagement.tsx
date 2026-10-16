@@ -1,6 +1,8 @@
 import { Calendar, MapPin, User, Phone, Clock, CheckCircle, AlertCircle } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { getDataStore, SiteVisit, localDate } from '../lib/dataStore';
+import { toastError } from '../lib/dataStore';
+import { fmtDate, waLink } from '../lib/format';
 import { ScheduleVisitDialog } from './ScheduleVisitDialog';
 import { RescheduleVisitDialog } from './RescheduleVisitDialog';
 import { LogVisitExecutionDialog } from './LogVisitExecutionDialog';
@@ -52,12 +54,19 @@ export function SiteVisitManagement() {
     return () => clearInterval(interval);
   }, []);
 
-  const handleConfirm = (visit: SiteVisit) => {
-    dataStore.updateVisit(visit.id, {
-      status: 'Confirmed',
-      confirmationSent: true
-    });
-    toast.success(`Visit ${visit.id} confirmed and SMS sent to customer`);
+  const confirmText = (v: SiteVisit) => {
+    const p = dataStore.getProjects().find(x => x.name === v.project);
+    return `Hello ${v.customer}, your site visit to ${v.project}${p ? ` (${p.location})` : ''} is confirmed for ${fmtDate(v.date)} at ${v.time}. ${v.salesExec} will meet you.${p?.latitude ? ` Location: https://maps.google.com/?q=${p.latitude},${p.longitude}` : ''} - ${dataStore.setting('company_name', 'GENXA Developers')}`;
+  };
+
+  const handleConfirm = async (visit: SiteVisit) => {
+    const msg = confirmText(visit);
+    window.open(waLink(visit.mobile, msg), '_blank');
+    try {
+      await dataStore.patch('visits', visit.id, { status: 'Confirmed', confirmationSent: true });
+      await dataStore.insert('notifications', { channel: 'WhatsApp', recipientName: visit.customer, recipientContact: visit.mobile, template: 'Visit Confirmation', message: msg, status: 'Sent', relatedType: 'visit', relatedId: visit.id, sentBy: dataStore.getPersona().name, sentAt: new Date().toISOString() });
+      toast.success(`Visit ${visit.id} confirmed; WhatsApp opened for ${visit.customer}`);
+    } catch (err) { toastError(err); }
     loadData();
   };
 
@@ -72,18 +81,20 @@ export function SiteVisitManagement() {
     }
   };
 
-  const handleSendConfirmations = () => {
-    const pending = visits.filter(v => (v.status === 'Scheduled' || v.status === 'Confirmed') && !v.confirmationSent);
+  const handleSendConfirmations = async () => {
+    const pending = visits.filter(v => (v.status === 'Scheduled' || v.status === 'Confirmed' || v.status === 'Tentative') && !v.confirmationSent && v.date >= localDate());
     if (pending.length === 0) {
       toast.info('No pending confirmations to send');
       return;
     }
-
-    pending.forEach(v => {
-      dataStore.updateVisit(v.id, { confirmationSent: true, status: 'Confirmed' });
-    });
-
-    toast.success(`Sent confirmations for ${pending.length} visits`);
+    try {
+      await dataStore.insertMany('notifications', pending.map(v => ({
+        channel: 'WhatsApp', recipientName: v.customer, recipientContact: v.mobile, template: 'Visit Confirmation', message: confirmText(v),
+        status: 'Queued', relatedType: 'visit', relatedId: v.id, sentBy: dataStore.getPersona().name, scheduledFor: localDate(),
+      })));
+      await Promise.all(pending.map(v => dataStore.patch('visits', v.id, { confirmationSent: true, status: 'Confirmed' })));
+      toast.success(`${pending.length} confirmations queued. Send them from Notifications.`);
+    } catch (err) { toastError(err); }
     loadData();
   };
 

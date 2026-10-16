@@ -1,243 +1,173 @@
-import { Building2, DollarSign, FileCheck, Clock, CheckCircle, Plus } from 'lucide-react';
 import { useState } from 'react';
-import { Button } from './ui/button';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import { Landmark, Plus, CheckCircle, Clock, IndianRupee, XCircle, ArrowRight } from 'lucide-react';
 import { toast } from 'sonner';
+import { getDataStore, Loan, Booking, localDate, toastError } from '../lib/dataStore';
+import { liveBookings, bookingFinance } from '../lib/crm';
+import { inr, inrShort, fmtDate } from '../lib/format';
+import { PageHeader, StatCard, Panel, Tabs, Badge, thCls, tdCls, btnPrimary, btnSecondary, btnSmall, btnSmallPrimary, inputCls, EmptyState, Modal, Field, Spinner, ContactButtons } from './common';
+import { BookingDetail } from './BookingParts';
 
-interface LoanApplication {
-  id: string;
-  bookingId: string;
-  customer: string;
-  mobile: string;
-  project: string;
-  unit: string;
-  propertyValue: number;
-  loanAmount: number;
-  bank: string;
-  status: 'Applied' | 'Documents Submitted' | 'Under Review' | 'Sanctioned' | 'Disbursed' | 'Rejected';
-  applicationDate: string;
-  sanctionDate?: string;
-  disbursementDate?: string;
-  loanOfficer: string;
-}
+export const BANKS = ['HDFC Bank', 'SBI', 'ICICI Bank', 'Axis Bank', 'Kotak Mahindra Bank', 'LIC Housing Finance', 'Bank of Baroda', 'PNB Housing'];
+const OPEN = ['Applied', 'Documents Submitted', 'Sanctioned', 'Partially Disbursed'];
 
 export function LoanProcessing() {
-  const [activeTab, setActiveTab] = useState('active');
-
-  const [loanApplications] = useState<LoanApplication[]>([
-    { id: 'LN001', bookingId: 'BK127', customer: 'Vikram Singh', mobile: '9876543214', project: 'Metro Plaza', unit: 'A-201', propertyValue: 3590000, loanAmount: 2500000, bank: 'HDFC Bank', status: 'Documents Submitted', applicationDate: '2025-02-02', loanOfficer: 'Rajiv Mehta' },
-    { id: 'LN002', bookingId: 'BK126', customer: 'Meera Iyer', mobile: '9876543217', project: 'Skyline Heights', unit: 'B-305', propertyValue: 4200000, loanAmount: 3000000, bank: 'ICICI Bank', status: 'Under Review', applicationDate: '2025-01-30', loanOfficer: 'Priya Kapoor' },
-    { id: 'LN003', bookingId: 'BK125', customer: 'Rahul Sharma', mobile: '9876543218', project: 'Green Valley', unit: 'C-102', propertyValue: 6800000, loanAmount: 4800000, bank: 'SBI', status: 'Sanctioned', applicationDate: '2025-01-26', sanctionDate: '2025-02-03', loanOfficer: 'Amit Sharma' },
-    { id: 'LN004', bookingId: 'BK124', customer: 'Anjali Desai', mobile: '9876543215', project: 'Skyline Heights', unit: 'A-405', propertyValue: 4500000, loanAmount: 3200000, bank: 'Axis Bank', status: 'Disbursed', applicationDate: '2025-01-20', sanctionDate: '2025-01-28', disbursementDate: '2025-02-01', loanOfficer: 'Neha Singh' },
-  ]);
-
-  const stats = [
-    { label: 'Active Applications', value: loanApplications.filter(l => !['Disbursed', 'Rejected'].includes(l.status)).length, icon: Clock, color: 'blue' },
-    { label: 'Sanctioned This Month', value: loanApplications.filter(l => l.status === 'Sanctioned').length, icon: CheckCircle, color: 'green' },
-    { label: 'Total Loan Amount (₹Cr)', value: (loanApplications.reduce((sum, l) => sum + l.loanAmount, 0) / 10000000).toFixed(2), icon: DollarSign, color: 'purple' },
-    { label: 'Avg Processing Time', value: '12 days', icon: FileCheck, color: 'orange' },
-  ];
-
-  const activeApplications = loanApplications.filter(l => !['Disbursed', 'Rejected'].includes(l.status));
-  const completedApplications = loanApplications.filter(l => l.status === 'Disbursed');
-
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case 'Applied': return 'bg-blue-100 text-blue-700';
-      case 'Documents Submitted': return 'bg-yellow-100 text-yellow-700';
-      case 'Under Review': return 'bg-orange-100 text-orange-700';
-      case 'Sanctioned': return 'bg-green-100 text-green-700';
-      case 'Disbursed': return 'bg-purple-100 text-purple-700';
-      case 'Rejected': return 'bg-red-100 text-red-700';
-      default: return 'bg-gray-100 text-gray-700';
-    }
-  };
-
-  const getColorClasses = (color: string) => {
-    const colors: Record<string, { bg: string; text: string; icon: string }> = {
-      blue: { bg: 'bg-blue-50', text: 'text-blue-700', icon: 'text-blue-600' },
-      green: { bg: 'bg-green-50', text: 'text-green-700', icon: 'text-green-600' },
-      purple: { bg: 'bg-purple-50', text: 'text-purple-700', icon: 'text-purple-600' },
-      orange: { bg: 'bg-orange-50', text: 'text-orange-700', icon: 'text-orange-600' },
-    };
-    return colors[color];
-  };
-
-  const handleUpdateStatus = (_loanId: string, newStatus: string) => {
-    toast.success(`Loan status updated to ${newStatus}`);
-  };
-
-  const handleViewDocuments = (_loanId: string) => {
-    toast.info('Opening documents viewer...');
-  };
+  const store = getDataStore();
+  const [tab, setTab] = useState('open');
+  const [create, setCreate] = useState(false);
+  const [action, setAction] = useState<{ loan: Loan; kind: 'advance' | 'sanction' | 'disburse' | 'reject' } | null>(null);
+  const [detail, setDetail] = useState<string | null>(null);
+  const bookings = new Map(store.getBookings().map(b => [b.id, b]));
+  const loans = store.list<Loan>('loans').filter(l => bookings.get(l.bookingId)?.stage !== 'Cancelled');
+  const list = tab === 'open' ? loans.filter(l => OPEN.includes(l.status)) : tab === 'done' ? loans.filter(l => l.status === 'Disbursed') : loans.filter(l => l.status === 'Rejected');
+  const byBank = BANKS.map(bank => ({ bank: bank.replace(' Bank', ''), Sanctioned: Math.round(loans.filter(l => l.bank === bank).reduce((s, l) => s + (l.sanctionedAmount || 0), 0) / 1e5), Disbursed: Math.round(loans.filter(l => l.bank === bank).reduce((s, l) => s + (l.disbursedAmount || 0), 0) / 1e5) })).filter(x => x.Sanctioned || x.Disbursed);
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-gray-900">Loan Processing</h2>
-          <p className="text-gray-600">Manage home loan applications and approvals</p>
-        </div>
-        <Button className="bg-blue-600 hover:bg-blue-700 text-white">
-          <Plus className="w-4 h-4 mr-2" />
-          New Application
-        </Button>
+      <PageHeader title="Loan Processing" subtitle="Track home loans from application to disbursement. Each disbursement is posted to the booking as a receipt."
+        actions={<button className={btnPrimary} onClick={() => setCreate(true)}><Plus className="w-4 h-4" />New loan file</button>} />
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <StatCard label="Open loan files" value={loans.filter(l => OPEN.includes(l.status)).length} icon={Clock} tone="orange" />
+        <StatCard label="Sanctioned" value={inrShort(loans.reduce((s, l) => s + (l.sanctionedAmount || 0), 0))} icon={CheckCircle} tone="blue" />
+        <StatCard label="Disbursed" value={inrShort(loans.reduce((s, l) => s + (l.disbursedAmount || 0), 0))} icon={IndianRupee} tone="green" />
+        <StatCard label="Pending disbursement" value={inrShort(loans.filter(l => l.status !== 'Rejected').reduce((s, l) => s + Math.max(0, (l.sanctionedAmount || 0) - (l.disbursedAmount || 0)), 0))} icon={Landmark} tone="purple" />
       </div>
-
-      {/* Stats Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        {stats.map((stat) => {
-          const Icon = stat.icon;
-          const colors = getColorClasses(stat.color);
-
-          return (
-            <div key={stat.label} className="bg-white p-6 rounded-lg border border-gray-200">
-              <div className="flex items-start justify-between">
-                <div>
-                  <p className="text-sm text-gray-600">{stat.label}</p>
-                  <p className="text-gray-900 mt-2">{stat.value}</p>
-                </div>
-                <div className={`p-3 rounded-lg ${colors.bg}`}>
-                  <Icon className={`w-6 h-6 ${colors.icon}`} />
-                </div>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      {/* Bank Partners */}
-      <div className="bg-white p-6 rounded-lg border border-gray-200">
-        <h3 className="text-gray-900 mb-4">Partner Banks</h3>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          {['HDFC Bank', 'ICICI Bank', 'SBI', 'Axis Bank', 'Kotak Mahindra', 'PNB Housing', 'LIC Housing', 'DHFL'].map((bank, idx) => (
-            <div key={idx} className="p-3 border border-gray-200 rounded-lg text-center hover:border-blue-300 transition-colors cursor-pointer">
-              <Building2 className="w-6 h-6 text-blue-600 mx-auto mb-2" />
-              <div className="text-sm text-gray-900">{bank}</div>
-              <div className="text-xs text-gray-500 mt-1">7.5% - 8.5%</div>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* Tabs */}
-      <div className="bg-white rounded-lg border border-gray-200">
-        <div className="border-b border-gray-200">
-          <div className="flex gap-4 px-6">
-            <button
-              onClick={() => setActiveTab('active')}
-              className={`py-4 px-2 border-b-2 transition-colors ${
-                activeTab === 'active'
-                  ? 'border-blue-600 text-blue-600'
-                  : 'border-transparent text-gray-600 hover:text-gray-900'
-              }`}
-            >
-              Active ({activeApplications.length})
-            </button>
-            <button
-              onClick={() => setActiveTab('completed')}
-              className={`py-4 px-2 border-b-2 transition-colors ${
-                activeTab === 'completed'
-                  ? 'border-blue-600 text-blue-600'
-                  : 'border-transparent text-gray-600 hover:text-gray-900'
-              }`}
-            >
-              Completed ({completedApplications.length})
-            </button>
-            <button
-              onClick={() => setActiveTab('all')}
-              className={`py-4 px-2 border-b-2 transition-colors ${
-                activeTab === 'all'
-                  ? 'border-blue-600 text-blue-600'
-                  : 'border-transparent text-gray-600 hover:text-gray-900'
-              }`}
-            >
-              All ({loanApplications.length})
-            </button>
+      {byBank.length > 0 && (
+        <Panel title="By bank (₹ lakh)">
+          <div className="p-4 h-56">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={byBank}><CartesianGrid strokeDasharray="3 3" vertical={false} /><XAxis dataKey="bank" tick={{ fontSize: 12 }} /><YAxis tick={{ fontSize: 12 }} /><Tooltip />
+                <Bar dataKey="Sanctioned" fill="#93c5fd" /><Bar dataKey="Disbursed" fill="#16a34a" /></BarChart>
+            </ResponsiveContainer>
           </div>
-        </div>
-
-        <div className="p-6">
-          <div className="space-y-4">
-            {(activeTab === 'active' ? activeApplications : activeTab === 'completed' ? completedApplications : loanApplications).map((loan) => (
-              <div key={loan.id} className="border border-gray-200 rounded-lg p-4 hover:border-blue-300 transition-colors">
-                <div className="flex items-start justify-between mb-3">
-                  <div className="flex-1">
-                    <div className="flex items-center gap-3 mb-2">
-                      <span className="text-gray-900">{loan.customer}</span>
-                      <span className={`px-2 py-1 rounded-full text-xs ${getStatusColor(loan.status)}`}>
-                        {loan.status}
+        </Panel>
+      )}
+      <Panel>
+        <Tabs active={tab} onChange={setTab} tabs={[{ id: 'open', label: 'In progress', count: loans.filter(l => OPEN.includes(l.status)).length }, { id: 'done', label: 'Fully disbursed', count: loans.filter(l => l.status === 'Disbursed').length }, { id: 'rejected', label: 'Rejected', count: loans.filter(l => l.status === 'Rejected').length }]} />
+        <div className="overflow-x-auto">
+          <table className="w-full">
+            <thead className="bg-gray-50"><tr>{['Loan', 'Customer', 'Bank', 'Applied for', 'Sanctioned', 'Disbursed', 'Status', ''].map(h => <th key={h} className={thCls}>{h}</th>)}</tr></thead>
+            <tbody className="divide-y divide-gray-100">
+              {list.map(l => {
+                const b = bookings.get(l.bookingId);
+                return (
+                  <tr key={l.id} className="hover:bg-gray-50">
+                    <td className={tdCls}>{l.id}<div className="text-xs text-gray-500">{fmtDate(l.applicationDate)}</div></td>
+                    <td className={tdCls}><button className="hover:underline text-left" onClick={() => b && setDetail(b.id)}>{b?.customer}</button><div className="text-xs text-gray-500 whitespace-nowrap">{b?.project} {b?.unit}</div></td>
+                    <td className={tdCls}>{l.bank}<div className="text-xs text-gray-500">{l.loanOfficer || ''}</div></td>
+                    <td className={`${tdCls} whitespace-nowrap`}>{inr(l.loanAmount)}</td>
+                    <td className={`${tdCls} whitespace-nowrap`}>{l.sanctionedAmount ? inr(l.sanctionedAmount) : '—'}<div className="text-xs text-gray-500">{fmtDate(l.sanctionDate)}</div></td>
+                    <td className={`${tdCls} whitespace-nowrap`}>{l.disbursedAmount ? inr(l.disbursedAmount) : '—'}<div className="text-xs text-gray-500">{l.disbursementDate ? fmtDate(l.disbursementDate) : ''}</div></td>
+                    <td className={tdCls}><Badge>{l.status}</Badge>{l.notes && <div className="text-xs text-gray-500 max-w-[180px] truncate" title={l.notes}>{l.notes}</div>}</td>
+                    <td className={`${tdCls} whitespace-nowrap`}>
+                      <span className="inline-flex gap-1">
+                        {l.status === 'Applied' && <button className={btnSmallPrimary} onClick={() => setAction({ loan: l, kind: 'advance' })}><ArrowRight className="w-3.5 h-3.5" />Docs submitted</button>}
+                        {['Applied', 'Documents Submitted'].includes(l.status) && <button className={btnSmallPrimary} onClick={() => setAction({ loan: l, kind: 'sanction' })}><CheckCircle className="w-3.5 h-3.5" />Sanction</button>}
+                        {['Sanctioned', 'Partially Disbursed'].includes(l.status) && <button className={btnSmallPrimary} onClick={() => setAction({ loan: l, kind: 'disburse' })}><IndianRupee className="w-3.5 h-3.5" />Disburse</button>}
+                        {OPEN.includes(l.status) && <button className={btnSmall} onClick={() => setAction({ loan: l, kind: 'reject' })}><XCircle className="w-3.5 h-3.5" />Reject</button>}
+                        {b && <ContactButtons compact mobile={b.mobile} name={b.customer} relatedType="booking" relatedId={b.id} />}
                       </span>
-                    </div>
-                    <div className="grid grid-cols-5 gap-4 text-sm">
-                      <div>
-                        <span className="text-gray-600">Loan ID:</span>
-                        <div className="text-gray-900">{loan.id}</div>
-                      </div>
-                      <div>
-                        <span className="text-gray-600">Bank:</span>
-                        <div className="text-gray-900">{loan.bank}</div>
-                      </div>
-                      <div>
-                        <span className="text-gray-600">Property Value:</span>
-                        <div className="text-gray-900">₹{(loan.propertyValue / 100000).toFixed(1)}L</div>
-                      </div>
-                      <div>
-                        <span className="text-gray-600">Loan Amount:</span>
-                        <div className="text-gray-900">₹{(loan.loanAmount / 100000).toFixed(1)}L</div>
-                      </div>
-                      <div>
-                        <span className="text-gray-600">LTV:</span>
-                        <div className="text-gray-900">{((loan.loanAmount / loan.propertyValue) * 100).toFixed(0)}%</div>
-                      </div>
-                    </div>
-                    <div className="grid grid-cols-5 gap-4 text-sm mt-2">
-                      <div>
-                        <span className="text-gray-600">Project:</span>
-                        <div className="text-gray-900">{loan.project}</div>
-                      </div>
-                      <div>
-                        <span className="text-gray-600">Unit:</span>
-                        <div className="text-gray-900">{loan.unit}</div>
-                      </div>
-                      <div>
-                        <span className="text-gray-600">Applied On:</span>
-                        <div className="text-gray-900">{new Date(loan.applicationDate).toLocaleDateString()}</div>
-                      </div>
-                      <div>
-                        <span className="text-gray-600">Loan Officer:</span>
-                        <div className="text-gray-900">{loan.loanOfficer}</div>
-                      </div>
-                      <div>
-                        <span className="text-gray-600">Mobile:</span>
-                        <div className="text-gray-900">{loan.mobile}</div>
-                      </div>
-                    </div>
-                  </div>
-                  <div className="flex gap-2">
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => handleViewDocuments(loan.id)}
-                    >
-                      <FileCheck className="w-4 h-4 mr-1" />
-                      Documents
-                    </Button>
-                    {!['Disbursed', 'Rejected'].includes(loan.status) && (
-                      <Button
-                        size="sm"
-                        className="bg-blue-600 hover:bg-blue-700 text-white"
-                        onClick={() => handleUpdateStatus(loan.id, 'Sanctioned')}
-                      >
-                        Update Status
-                      </Button>
-                    )}
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          {list.length === 0 && <EmptyState>No loan files here.</EmptyState>}
+        </div>
+      </Panel>
+      {create && <NewLoanDialog onClose={() => setCreate(false)} />}
+      {action && <LoanActionDialog {...action} onClose={() => setAction(null)} />}
+      {detail && <BookingDetail bookingId={detail} onClose={() => setDetail(null)} />}
+    </div>
+  );
+}
+
+function NewLoanDialog({ onClose }: { onClose: () => void }) {
+  const store = getDataStore();
+  const existing = new Set(store.list<Loan>('loans').filter(l => l.status !== 'Rejected').map(l => l.bookingId));
+  const options = liveBookings().filter(b => !existing.has(b.id) && !['Fully Paid', 'Possession Done', 'Completed'].includes(b.stage));
+  const [bookingId, setBookingId] = useState(options[0]?.id || '');
+  const b = options.find(x => x.id === bookingId);
+  const fin = b ? bookingFinance(b) : null;
+  const max = fin ? Math.round(fin.net * 0.8) : 0;
+  const [f, setF] = useState({ bank: BANKS[0], loanAmount: 0, loanOfficer: '', notes: '' });
+  const [busy, setBusy] = useState(false);
+  const save = async () => {
+    if (!b) { toast.error('Choose a booking'); return; }
+    if (!(f.loanAmount > 0) || f.loanAmount > max) { toast.error(`Loan amount should be up to 80% of the agreement value (${inr(max)})`); return; }
+    setBusy(true);
+    try {
+      await store.insert('loans', { bookingId: b.id, bank: f.bank, loanAmount: f.loanAmount, status: 'Applied', applicationDate: localDate(), loanOfficer: f.loanOfficer || undefined, notes: f.notes || undefined, disbursedAmount: 0 });
+      toast.success(`Loan file opened with ${f.bank} for ${b.customer}`);
+      onClose();
+    } catch (e) { toastError(e); } finally { setBusy(false); }
+  };
+  return (
+    <Modal open onClose={onClose} title="New loan file" footer={<><button className={btnSecondary} onClick={onClose}>Cancel</button><button className={btnPrimary} onClick={save} disabled={busy}>{busy && <Spinner />}Save</button></>}>
+      <div className="space-y-4">
+        <Field label="Booking" required>
+          <select className={inputCls} value={bookingId} onChange={e => setBookingId(e.target.value)}>
+            {options.map(o => <option key={o.id} value={o.id}>{o.customer} · {o.project} {o.unit} · {o.id}</option>)}
+          </select>
+        </Field>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <Field label="Bank" required><select className={inputCls} value={f.bank} onChange={e => setF({ ...f, bank: e.target.value })}>{BANKS.map(x => <option key={x}>{x}</option>)}</select></Field>
+          <Field label="Loan amount (₹)" required hint={fin ? `Max 80% of ${inr(fin.net)} = ${inr(max)}` : undefined}><input type="number" className={inputCls} value={f.loanAmount || ''} onChange={e => setF({ ...f, loanAmount: Number(e.target.value) })} /></Field>
+          <Field label="Bank loan officer"><input className={inputCls} value={f.loanOfficer} onChange={e => setF({ ...f, loanOfficer: e.target.value })} /></Field>
+          <Field label="Notes"><input className={inputCls} value={f.notes} onChange={e => setF({ ...f, notes: e.target.value })} /></Field>
         </div>
       </div>
-    </div>
+    </Modal>
+  );
+}
+
+function LoanActionDialog({ loan, kind, onClose }: { loan: Loan; kind: 'advance' | 'sanction' | 'disburse' | 'reject'; onClose: () => void }) {
+  const store = getDataStore();
+  const b = store.getBookings().find(x => x.id === loan.bookingId) as Booking;
+  const remaining = Math.max(0, (loan.sanctionedAmount || 0) - (loan.disbursedAmount || 0));
+  const [amount, setAmount] = useState(kind === 'sanction' ? loan.loanAmount : kind === 'disburse' ? remaining : 0);
+  const [date, setDate] = useState(localDate());
+  const [notes, setNotes] = useState('');
+  const [busy, setBusy] = useState(false);
+  const title = { advance: 'Documents submitted to bank', sanction: 'Record sanction', disburse: 'Record disbursement', reject: 'Reject loan' }[kind];
+  const save = async () => {
+    if (date > localDate()) { toast.error('Date cannot be in the future'); return; }
+    const appendNote = notes ? `${loan.notes ? loan.notes + ' | ' : ''}${notes}` : loan.notes;
+    let updates: Partial<Loan> = {};
+    if (kind === 'advance') updates = { status: 'Documents Submitted', notes: appendNote };
+    if (kind === 'sanction') {
+      if (!(amount > 0)) { toast.error('Enter the sanctioned amount'); return; }
+      updates = { status: 'Sanctioned', sanctionedAmount: amount, sanctionDate: date, notes: appendNote };
+    }
+    if (kind === 'disburse') {
+      if (!(amount > 0) || amount > remaining) { toast.error(`Disbursement must be between 1 and ${inr(remaining)}`); return; }
+      const total = (loan.disbursedAmount || 0) + amount;
+      updates = { status: total >= (loan.sanctionedAmount || 0) ? 'Disbursed' : 'Partially Disbursed', disbursedAmount: total, disbursementDate: date, notes: appendNote };
+    }
+    if (kind === 'reject') {
+      if (!notes.trim()) { toast.error('Enter the reason'); return; }
+      updates = { status: 'Rejected', notes: `${loan.notes ? loan.notes + ' | ' : ''}Rejected: ${notes}` };
+    }
+    setBusy(true);
+    try {
+      await store.patch('loans', loan.id, updates);
+      toast.success(kind === 'disburse' ? `${inr(amount)} disbursed and posted as a receipt on ${b.id}` : `${title}: saved`);
+      onClose();
+    } catch (e) { toastError(e); } finally { setBusy(false); }
+  };
+  return (
+    <Modal open onClose={onClose} title={title} subtitle={`${loan.id} · ${loan.bank} · ${b?.customer}`} size="sm"
+      footer={<><button className={btnSecondary} onClick={onClose}>Cancel</button><button className={btnPrimary} onClick={save} disabled={busy}>{busy && <Spinner />}Save</button></>}>
+      <div className="space-y-4">
+        {(kind === 'sanction' || kind === 'disburse') && (
+          <Field label={kind === 'sanction' ? 'Sanctioned amount (₹)' : 'Amount disbursed now (₹)'} required hint={kind === 'disburse' ? `Remaining to disburse ${inr(remaining)}` : `Applied for ${inr(loan.loanAmount)}`}>
+            <input type="number" className={inputCls} value={amount || ''} onChange={e => setAmount(Number(e.target.value))} />
+          </Field>
+        )}
+        {(kind === 'sanction' || kind === 'disburse') && <Field label="Date" required><input type="date" max={localDate()} className={inputCls} value={date} onChange={e => setDate(e.target.value)} /></Field>}
+        <Field label={kind === 'reject' ? 'Reason' : 'Notes'} required={kind === 'reject'}><textarea rows={2} className={inputCls} value={notes} onChange={e => setNotes(e.target.value)} /></Field>
+      </div>
+    </Modal>
   );
 }

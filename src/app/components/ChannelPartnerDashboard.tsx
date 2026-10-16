@@ -1,544 +1,401 @@
-import { Briefcase, Users, TrendingUp, DollarSign, Phone, Mail, MapPin, Star } from 'lucide-react';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+// Channel partners: the sourcing team's dashboard, onboarding, commission
+// payouts, and the partner's own portal (persona "Channel Partner").
 import { useState } from 'react';
-import { getDataStore, localDate } from '../lib/dataStore';
-import { OnboardCPDialog } from './OnboardCPDialog';
-import { CPProfileDialog } from './CPProfileDialog';
-import { ProcessCommissionDialog } from './ProcessCommissionDialog';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
+import { Briefcase, Users, TrendingUp, IndianRupee, Plus, Download, Star, Eye, Wallet, UserPlus, AlertTriangle } from 'lucide-react';
 import { toast } from 'sonner';
+import { getDataStore, ChannelPartner, Booking, CommissionPayout, Lead, localDate, toastError, toCrmError } from '../lib/dataStore';
+import { bookingFinance } from '../lib/crm';
+import { inr, inrShort, fmtDate, downloadCSV, today, isValidMobile, isValidEmail, normaliseMobile } from '../lib/format';
+import { PageHeader, StatCard, Panel, Badge, thCls, tdCls, btnPrimary, btnSecondary, btnSmall, inputCls, Modal, Field, Spinner, EmptyState, Tabs, ContactButtons } from './common';
+
+// ---------------- commission maths ----------------
+
+export function commissionEligible(cp: ChannelPartner, b: Booking): boolean {
+  if (b.stage === 'Cancelled') return false;
+  const terms = (cp.paymentTerms || '').toLowerCase();
+  if (terms.includes('agreement')) return ['Agreement Done', 'Documentation', 'Fully Paid', 'Possession Done', 'Completed'].includes(b.stage);
+  const pct = terms.match(/(\d+)\s*%/);
+  if (pct) return bookingFinance(b).percentPaid >= Number(pct[1]);
+  return true;
+}
+
+export interface CPStats {
+  cp: ChannelPartner;
+  leads: Lead[];
+  visits: number;
+  bookings: Booking[];
+  bookingValue: number;
+  earned: number;      // on eligible bookings
+  accrued: number;     // on all live bookings
+  paid: number;
+  due: number;
+  payouts: CommissionPayout[];
+}
+
+export function cpStats(cp: ChannelPartner): CPStats {
+  const store = getDataStore();
+  const leads = store.getLeads().filter(l => l.cpId === cp.id);
+  const leadIds = new Set(leads.map(l => l.id));
+  const bookings = store.getBookings().filter(b => b.cpId === cp.id || (b.leadId && leadIds.has(b.leadId)));
+  const live = bookings.filter(b => b.stage !== 'Cancelled');
+  const value = (b: Booking) => (b.price - b.discount) * (cp.commissionRate || 0) / 100;
+  const payouts = store.list<CommissionPayout>('commissionPayouts').filter(p => p.cpId === cp.id);
+  const paid = payouts.reduce((s, p) => s + p.amount, 0);
+  const earned = Math.round(live.filter(b => commissionEligible(cp, b)).reduce((s, b) => s + value(b), 0));
+  return {
+    cp, leads, bookings,
+    visits: store.getVisits().filter(v => leadIds.has(v.leadId) && v.status === 'Completed').length,
+    bookingValue: live.reduce((s, b) => s + b.price - b.discount, 0),
+    earned, accrued: Math.round(live.reduce((s, b) => s + value(b), 0)), paid, due: Math.max(0, earned - paid), payouts,
+  };
+}
+
+/** Commission still unpaid per booking. */
+function bookingDues(s: CPStats) {
+  return s.bookings.filter(b => b.stage !== 'Cancelled').map(b => {
+    const amount = Math.round((b.price - b.discount) * (s.cp.commissionRate || 0) / 100);
+    const paid = s.payouts.filter(p => p.bookingId === b.id).reduce((a, p) => a + p.amount, 0);
+    return { booking: b, amount, paid, due: Math.max(0, amount - paid), eligible: commissionEligible(s.cp, b) };
+  });
+}
+
+// ---------------- internal dashboard ----------------
 
 export function ChannelPartnerDashboard() {
-  const [showOnboardDialog, setShowOnboardDialog] = useState(false);
-  const [showProfileDialog, setShowProfileDialog] = useState(false);
-  const [showCommissionDialog, setShowCommissionDialog] = useState(false);
-  const [selectedCP, setSelectedCP] = useState<any>(null);
-  const [searchTerm, setSearchTerm] = useState('');
-  const [, setRefreshKey] = useState(0);
-  const [formData, setFormData] = useState({
-    companyName: '',
-    contactPerson: '',
-    mobile: '',
-    email: '',
-    location: '',
-    reraNumber: '',
-    commissionRate: '',
-    commissionType: 'Percentage of Deal Value',
-    paymentTerms: 'On Booking',
-    bankDetails: '',
-    remarks: ''
-  });
+  const store = getDataStore();
+  const [search, setSearch] = useState('');
+  const [onboard, setOnboard] = useState(false);
+  const [profile, setProfile] = useState<ChannelPartner | null>(null);
+  const [payout, setPayout] = useState<ChannelPartner | null>(null);
+  const stats = store.getChannelPartners().map(cpStats);
+  const shown = stats.filter(s => !search || `${s.cp.id} ${s.cp.companyName} ${s.cp.contactPerson} ${s.cp.location}`.toLowerCase().includes(search.toLowerCase()));
+  const chart = stats.filter(s => s.cp.status === 'Active').map(s => ({ name: s.cp.companyName, Leads: s.leads.length, Visits: s.visits, Bookings: s.bookings.filter(b => b.stage !== 'Cancelled').length }));
 
-  const dataStore = getDataStore();
-  const allLeads = dataStore.getLeads();
-  const allBookings = dataStore.getBookings();
+  const report = () => downloadCSV(`channel-partners-${today()}.csv`, stats.map(s => ({
+    id: s.cp.id, company: s.cp.companyName, contact: s.cp.contactPerson, mobile: s.cp.mobile, status: s.cp.status, rating: s.cp.rating,
+    leads: s.leads.length, visits: s.visits, bookings: s.bookings.filter(b => b.stage !== 'Cancelled').length, booking_value: s.bookingValue,
+    rate_pct: s.cp.commissionRate, commission_earned: s.earned, commission_paid: s.paid, commission_due: s.due,
+  })));
 
-  // Channel partners come from the database; performance is derived from leads and bookings
-  const channelPartners = dataStore.getChannelPartners().map(cp => {
-    const cpLeads = allLeads.filter(l => (l.source || '').includes(cp.id) || (l.source || '').includes(cp.companyName));
-    const cpLeadIds = new Set(cpLeads.map(l => l.id));
-    const cpBookings = allBookings.filter(b => cpLeadIds.has(b.leadId));
-    const bookingValue = cpBookings.reduce((sum, b) => sum + (b.price - b.discount), 0);
-    return {
-      id: cp.id,
-      name: cp.companyName,
-      contact: cp.contactPerson,
-      mobile: cp.mobile,
-      email: cp.email,
-      location: cp.location,
-      status: cp.status,
-      rating: cp.rating,
-      leadsProvided: cpLeads.length,
-      visits: cpLeads.filter(l => l.status === 'Visit Scheduled').length,
-      bookings: cpBookings.length,
-      commission: Math.round(bookingValue * (cp.commissionRate || 0) / 100),
-    };
-  }).filter(cp =>
-    searchTerm === '' ||
-    cp.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    (cp.contact || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
-    cp.id.toLowerCase().includes(searchTerm.toLowerCase())
+  return (
+    <div className="space-y-6">
+      <PageHeader title="Channel Partners" subtitle="Partner performance, registered leads and commission. A buyer already in the CRM can't be claimed by a second partner."
+        actions={<>
+          <button className={btnSecondary} onClick={report}><Download className="w-4 h-4" />Performance report</button>
+          <button className={btnPrimary} onClick={() => setOnboard(true)}><Plus className="w-4 h-4" />Onboard partner</button>
+        </>} />
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <StatCard label="Active partners" value={stats.filter(s => s.cp.status === 'Active').length} icon={Briefcase} hint={`${stats.length} in total`} />
+        <StatCard label="Partner leads" value={stats.reduce((a, s) => a + s.leads.length, 0)} icon={Users} tone="green" />
+        <StatCard label="Partner bookings" value={stats.reduce((a, s) => a + s.bookings.filter(b => b.stage !== 'Cancelled').length, 0)} icon={TrendingUp} tone="purple" hint={inrShort(stats.reduce((a, s) => a + s.bookingValue, 0))} />
+        <StatCard label="Commission due" value={inrShort(stats.reduce((a, s) => a + s.due, 0))} icon={IndianRupee} tone="orange" hint={`${inrShort(stats.reduce((a, s) => a + s.paid, 0))} paid so far`} />
+      </div>
+
+      <Panel title="Leads to bookings by partner">
+        <div className="p-4 h-64">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={chart}>
+              <CartesianGrid strokeDasharray="3 3" vertical={false} />
+              <XAxis dataKey="name" tick={{ fontSize: 12 }} /><YAxis allowDecimals={false} tick={{ fontSize: 12 }} /><Tooltip /><Legend />
+              <Bar dataKey="Leads" fill="#93c5fd" /><Bar dataKey="Visits" fill="#3b82f6" /><Bar dataKey="Bookings" fill="#1e3a8a" />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </Panel>
+
+      <Panel title="Partner directory" actions={<input className={`${inputCls} sm:max-w-[16rem]`} placeholder="Search partners" value={search} onChange={e => setSearch(e.target.value)} aria-label="Search partners" />}>
+        <div className="overflow-x-auto">
+          <table className="w-full">
+            <thead className="bg-gray-50"><tr>{['Partner', 'Contact', 'Leads', 'Visits', 'Bookings', 'Commission due', 'Rating', 'Status', ''].map(h => <th key={h} className={thCls}>{h}</th>)}</tr></thead>
+            <tbody className="divide-y divide-gray-100">
+              {shown.map(s => (
+                <tr key={s.cp.id} className="hover:bg-gray-50">
+                  <td className={tdCls}>{s.cp.companyName}<div className="text-xs text-gray-500">{s.cp.id} · {s.cp.location}</div></td>
+                  <td className={tdCls}>{s.cp.contactPerson}<div className="text-xs text-gray-500">{s.cp.mobile}</div></td>
+                  <td className={tdCls}>{s.leads.length}</td>
+                  <td className={tdCls}>{s.visits}</td>
+                  <td className={tdCls}>{s.bookings.filter(b => b.stage !== 'Cancelled').length}<div className="text-xs text-gray-500">{inrShort(s.bookingValue)}</div></td>
+                  <td className={`${tdCls} whitespace-nowrap`}>{inr(s.due)}<div className="text-xs text-gray-500">{s.cp.commissionRate}% · paid {inrShort(s.paid)}</div></td>
+                  <td className={tdCls}><span className="inline-flex items-center gap-1"><Star className="w-3.5 h-3.5 text-yellow-500 fill-yellow-400" />{s.cp.rating || '—'}</span></td>
+                  <td className={tdCls}><Badge>{s.cp.status}</Badge></td>
+                  <td className={`${tdCls} whitespace-nowrap`}>
+                    <span className="inline-flex gap-1">
+                      <button className={btnSmall} onClick={() => setProfile(s.cp)}><Eye className="w-3.5 h-3.5" />Profile</button>
+                      <button className={btnSmall} disabled={s.due <= 0} onClick={() => setPayout(s.cp)}><Wallet className="w-3.5 h-3.5" />Pay</button>
+                      <ContactButtons compact mobile={s.cp.mobile} name={s.cp.contactPerson} />
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {shown.length === 0 && <EmptyState>No partners match.</EmptyState>}
+        </div>
+      </Panel>
+
+      {onboard && <OnboardCPDialog onClose={() => setOnboard(false)} />}
+      {profile && <CPProfileDialog cp={profile} onClose={() => setProfile(null)} />}
+      {payout && <ProcessCommissionDialog cp={payout} onClose={() => setPayout(null)} />}
+    </div>
   );
+}
 
-  const handleViewProfile = (cp: any) => {
-    setSelectedCP(cp);
-    setShowProfileDialog(true);
+// ---------------- dialogs ----------------
+
+export function OnboardCPDialog({ onClose, onSuccess }: { onClose: () => void; onSuccess?: () => void }) {
+  const store = getDataStore();
+  const [f, setF] = useState({ companyName: '', contactPerson: '', mobile: '', email: '', location: '', reraNumber: '', commissionRate: 2, paymentTerms: 'On Agreement', bankDetails: '', remarks: '' });
+  const [busy, setBusy] = useState(false);
+  const set = (k: keyof typeof f) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => setF({ ...f, [k]: k === 'commissionRate' ? Number(e.target.value) : e.target.value });
+  const submit = async () => {
+    if (!f.companyName.trim() || !f.contactPerson.trim()) { toast.error('Company and contact person are required'); return; }
+    if (!isValidMobile(f.mobile)) { toast.error('Enter a valid 10-digit mobile'); return; }
+    if (!f.email || !isValidEmail(f.email)) { toast.error('Enter a valid email'); return; }
+    if (!(f.commissionRate > 0 && f.commissionRate <= 10)) { toast.error('Commission rate should be between 0 and 10%'); return; }
+    if (store.getChannelPartners().some(c => normaliseMobile(c.mobile) === normaliseMobile(f.mobile))) { toast.error('A partner with this mobile already exists'); return; }
+    setBusy(true);
+    try {
+      const cp = await store.addChannelPartner({
+        ...f, mobile: normaliseMobile(f.mobile), commissionType: 'Percentage of Deal Value', status: 'Active', rating: 0, onboardedDate: localDate(),
+      });
+      toast.success(`${cp.companyName} onboarded as ${cp.id}`);
+      onSuccess?.();
+      onClose();
+    } catch (err) { toastError(err); } finally { setBusy(false); }
   };
+  return (
+    <Modal open onClose={onClose} title="Onboard channel partner" size="lg"
+      footer={<><button className={btnSecondary} onClick={onClose}>Cancel</button><button className={btnPrimary} onClick={submit} disabled={busy}>{busy && <Spinner />}Onboard</button></>}>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <Field label="Company name" required><input className={inputCls} value={f.companyName} onChange={set('companyName')} /></Field>
+        <Field label="Contact person" required><input className={inputCls} value={f.contactPerson} onChange={set('contactPerson')} /></Field>
+        <Field label="Mobile" required><input className={inputCls} value={f.mobile} onChange={set('mobile')} inputMode="numeric" /></Field>
+        <Field label="Email" required><input className={inputCls} value={f.email} onChange={set('email')} /></Field>
+        <Field label="Location"><input className={inputCls} value={f.location} onChange={set('location')} /></Field>
+        <Field label="RERA agent no."><input className={inputCls} value={f.reraNumber} onChange={set('reraNumber')} /></Field>
+        <Field label="Commission (% of agreement value)" required><input type="number" step="0.25" className={inputCls} value={f.commissionRate} onChange={set('commissionRate')} /></Field>
+        <Field label="Payable">
+          <select className={inputCls} value={f.paymentTerms} onChange={set('paymentTerms')}><option>On Booking</option><option>On Agreement</option><option>On 20% Payment</option></select>
+        </Field>
+        <div className="md:col-span-2"><Field label="Bank details"><input className={inputCls} value={f.bankDetails} onChange={set('bankDetails')} placeholder="Bank, account no., IFSC" /></Field></div>
+        <div className="md:col-span-2"><Field label="Remarks"><textarea rows={2} className={inputCls} value={f.remarks} onChange={set('remarks')} /></Field></div>
+      </div>
+    </Modal>
+  );
+}
 
-  const handlePayCommission = (cp: any) => {
-    setSelectedCP(cp);
-    setShowCommissionDialog(true);
+export function CPProfileDialog({ cp, onClose }: { cp: ChannelPartner; onClose: () => void }) {
+  const store = getDataStore();
+  const s = cpStats(cp);
+  const [tab, setTab] = useState('bookings');
+  const setRating = (r: number) => store.updateChannelPartner(cp.id, { rating: r });
+  const toggle = () => store.updateChannelPartner(cp.id, { status: cp.status === 'Active' ? 'Inactive' : 'Active' });
+  const current = store.getChannelPartners().find(c => c.id === cp.id) || cp;
+  return (
+    <Modal open onClose={onClose} title={current.companyName} subtitle={`${current.id} · ${current.contactPerson} · ${current.mobile} · ${current.email}`} size="xl">
+      <div className="space-y-4">
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">
+          <StatCard label="Leads" value={s.leads.length} />
+          <StatCard label="Site visits" value={s.visits} />
+          <StatCard label="Bookings" value={s.bookings.filter(b => b.stage !== 'Cancelled').length} />
+          <StatCard label="Commission earned" value={inrShort(s.earned)} hint={`${inrShort(s.accrued)} incl. not yet payable`} />
+          <StatCard label="Paid / due" value={`${inrShort(s.paid)} / ${inrShort(s.due)}`} />
+        </div>
+        <div className="flex flex-wrap items-center gap-3 text-sm">
+          <span className="text-gray-600">Rating</span>
+          {[1, 2, 3, 4, 5].map(n => (
+            <button key={n} onClick={() => setRating(n)} aria-label={`Rate ${n}`}><Star className={`w-5 h-5 ${n <= Math.round(current.rating || 0) ? 'text-yellow-500 fill-yellow-400' : 'text-gray-300'}`} /></button>
+          ))}
+          <span className="text-gray-500">Commission {current.commissionRate}% · {current.paymentTerms || 'On Booking'} · RERA {current.reraNumber || '—'}</span>
+          <span className="flex-1" />
+          <button className={btnSmall} onClick={toggle}>{current.status === 'Active' ? 'Deactivate' : 'Activate'}</button>
+        </div>
+        <Tabs active={tab} onChange={setTab} tabs={[{ id: 'bookings', label: 'Bookings', count: s.bookings.length }, { id: 'leads', label: 'Leads', count: s.leads.length }, { id: 'payouts', label: 'Payouts', count: s.payouts.length }]} />
+        {tab === 'bookings' && <CPBookingsTable stats={s} />}
+        {tab === 'leads' && <CPLeadsTable leads={s.leads} />}
+        {tab === 'payouts' && <PayoutTable payouts={s.payouts} />}
+      </div>
+    </Modal>
+  );
+}
+
+function CPBookingsTable({ stats }: { stats: CPStats }) {
+  const rows = bookingDues(stats);
+  if (rows.length === 0) return <EmptyState>No bookings yet.</EmptyState>;
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full">
+        <thead className="bg-gray-50"><tr>{['Booking', 'Customer', 'Unit', 'Value', 'Stage', 'Commission', 'Paid', 'Due', 'Payable?'].map(h => <th key={h} className={thCls}>{h}</th>)}</tr></thead>
+        <tbody className="divide-y divide-gray-100">
+          {rows.map(r => (
+            <tr key={r.booking.id}>
+              <td className={tdCls}>{r.booking.id}<div className="text-xs text-gray-500">{fmtDate(r.booking.bookingDate)}</div></td>
+              <td className={tdCls}>{r.booking.customer}</td>
+              <td className={`${tdCls} whitespace-nowrap`}>{r.booking.project} {r.booking.unit}</td>
+              <td className={`${tdCls} whitespace-nowrap`}>{inrShort(r.booking.price - r.booking.discount)}</td>
+              <td className={tdCls}><Badge>{r.booking.stage}</Badge></td>
+              <td className={`${tdCls} whitespace-nowrap`}>{inr(r.amount)}</td>
+              <td className={`${tdCls} whitespace-nowrap`}>{inr(r.paid)}</td>
+              <td className={`${tdCls} whitespace-nowrap`}>{inr(r.due)}</td>
+              <td className={tdCls}>{r.eligible ? <Badge tone="green">Yes</Badge> : <Badge tone="gray">Not yet</Badge>}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function CPLeadsTable({ leads }: { leads: Lead[] }) {
+  if (leads.length === 0) return <EmptyState>No leads registered.</EmptyState>;
+  return (
+    <div className="overflow-x-auto max-h-[360px]">
+      <table className="w-full">
+        <thead className="bg-gray-50 sticky top-0"><tr>{['Lead', 'Name', 'Project', 'Registered', 'Status', 'Telecaller'].map(h => <th key={h} className={thCls}>{h}</th>)}</tr></thead>
+        <tbody className="divide-y divide-gray-100">
+          {leads.map(l => (
+            <tr key={l.id}>
+              <td className={tdCls}>{l.id}</td><td className={tdCls}>{l.name}<div className="text-xs text-gray-500">{l.mobile.replace(/^(\d{2})\d{5}/, '$1XXXXX')}</div></td>
+              <td className={tdCls}>{l.project}</td><td className={`${tdCls} whitespace-nowrap text-gray-600`}>{fmtDate(l.createdAt)}</td>
+              <td className={tdCls}><Badge tone={l.status === 'Booked' ? 'purple' : l.status === 'Dead' ? 'gray' : 'blue'}>{l.status}</Badge></td>
+              <td className={`${tdCls} text-gray-600`}>{l.assignedTo || '—'}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function PayoutTable({ payouts }: { payouts: CommissionPayout[] }) {
+  if (payouts.length === 0) return <EmptyState>No payouts yet.</EmptyState>;
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full">
+        <thead className="bg-gray-50"><tr>{['Payout', 'Date', 'Booking', 'Mode', 'Reference', 'Amount'].map(h => <th key={h} className={thCls}>{h}</th>)}</tr></thead>
+        <tbody className="divide-y divide-gray-100">
+          {payouts.map(p => (
+            <tr key={p.id}><td className={tdCls}>{p.id}</td><td className={tdCls}>{fmtDate(p.paidDate)}</td><td className={tdCls}>{p.bookingId || '—'}</td>
+              <td className={tdCls}>{p.mode}</td><td className={tdCls}>{p.reference}</td><td className={tdCls}>{inr(p.amount)}</td></tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+export function ProcessCommissionDialog({ cp, onClose, onSuccess }: { cp: ChannelPartner; onClose: () => void; onSuccess?: () => void }) {
+  const store = getDataStore();
+  const s = cpStats(cp);
+  const dues = bookingDues(s).filter(d => d.eligible && d.due > 0);
+  const [bookingId, setBookingId] = useState(dues[0]?.booking.id || '');
+  const sel = dues.find(d => d.booking.id === bookingId);
+  const [amount, setAmount] = useState(sel?.due || 0);
+  const [mode, setMode] = useState('NEFT');
+  const [reference, setReference] = useState('');
+  const [busy, setBusy] = useState(false);
+  const submit = async () => {
+    if (!sel) { toast.error('Choose a booking'); return; }
+    if (!(amount > 0) || amount > sel.due) { toast.error(`Amount must be between 1 and ${inr(sel.due)}`); return; }
+    if (!reference.trim()) { toast.error('Enter the payment reference (UTR / cheque no.)'); return; }
+    setBusy(true);
+    try {
+      await store.insert('commissionPayouts', { cpId: cp.id, bookingId: sel.booking.id, amount, mode, reference: reference.trim(), paidDate: localDate() });
+      toast.success(`Commission of ${inr(amount)} paid to ${cp.companyName}`);
+      onSuccess?.();
+      onClose();
+    } catch (err) { toastError(err); } finally { setBusy(false); }
   };
+  return (
+    <Modal open onClose={onClose} title={`Pay commission · ${cp.companyName}`} subtitle={`Payable now ${inr(s.due)} at ${cp.commissionRate}% (${cp.paymentTerms || 'On Booking'})`}
+      footer={<><button className={btnSecondary} onClick={onClose}>Cancel</button><button className={btnPrimary} onClick={submit} disabled={busy || !sel}>{busy && <Spinner />}Record payout</button></>}>
+      {dues.length === 0 ? <EmptyState>Nothing is payable yet. Commission becomes payable as bookings reach the agreed stage.</EmptyState> : (
+        <div className="space-y-4">
+          <Field label="Booking" required>
+            <select className={inputCls} value={bookingId} onChange={e => { setBookingId(e.target.value); setAmount(dues.find(d => d.booking.id === e.target.value)?.due || 0); }}>
+              {dues.map(d => <option key={d.booking.id} value={d.booking.id}>{d.booking.id} · {d.booking.customer} · {d.booking.unit} · due {inr(d.due)}</option>)}
+            </select>
+          </Field>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <Field label="Amount (₹)" required><input type="number" className={inputCls} value={amount || ''} onChange={e => setAmount(Number(e.target.value))} /></Field>
+            <Field label="Mode"><select className={inputCls} value={mode} onChange={e => setMode(e.target.value)}>{['NEFT', 'RTGS', 'Cheque', 'UPI'].map(m => <option key={m}>{m}</option>)}</select></Field>
+            <Field label="Reference" required><input className={inputCls} value={reference} onChange={e => setReference(e.target.value)} /></Field>
+          </div>
+          <p className="text-xs text-gray-500">TDS under section 194H and GST on commission are handled in accounts; export the payout list for Tally from Payments.</p>
+        </div>
+      )}
+    </Modal>
+  );
+}
 
-  const handleProcessCommissions = () => {
-    toast.info('Opening bulk commission processing...');
-  };
+// ---------------- partner portal ----------------
 
-  const handlePerformanceReport = () => {
-    toast.success('Generating performance report...');
-  };
+export function CPPortal() {
+  const store = getDataStore();
+  const persona = store.getPersona();
+  const cp = store.getChannelPartners().find(c => c.id === persona.refId);
+  const [tab, setTab] = useState('leads');
+  const [f, setF] = useState({ name: '', mobile: '', email: '', project: store.getProjects()[0]?.name || '', budget: '', notes: '' });
+  const [busy, setBusy] = useState(false);
+  const [conflict, setConflict] = useState<string | null>(null);
+  if (!cp) return <EmptyState>Choose a channel partner in "Viewing as".</EmptyState>;
+  const s = cpStats(cp);
 
-  const handleOnboardCP = () => {
-    setShowOnboardDialog(true);
-  };
-
-  const handleClearForm = () => {
-    setFormData({
-      companyName: '',
-      contactPerson: '',
-      mobile: '',
-      email: '',
-      location: '',
-      reraNumber: '',
-      commissionRate: '',
-      commissionType: 'Percentage of Deal Value',
-      paymentTerms: 'On Booking',
-      bankDetails: '',
-      remarks: ''
-    });
-    toast.info('Form cleared');
-  };
-
-  const handleSubmitInlineForm = (e: React.FormEvent) => {
-    e.preventDefault();
-
-    if (!formData.companyName || !formData.contactPerson || !formData.mobile || !formData.email) {
-      toast.error('Please fill all required fields');
+  const register = async () => {
+    setConflict(null);
+    if (!f.name.trim() || !isValidMobile(f.mobile)) { toast.error('Enter the buyer name and a valid 10-digit mobile'); return; }
+    if (!isValidEmail(f.email)) { toast.error('Enter a valid email'); return; }
+    const existing = store.getLeads().find(l => l.status !== 'Dead' && normaliseMobile(l.mobile) === normaliseMobile(f.mobile));
+    if (existing) {
+      setConflict(existing.cpId === cp.id ? `You registered this buyer already (lead ${existing.id}, status ${existing.status}).` : 'This buyer is already registered with us, so it cannot be claimed. Contact your sourcing manager if you believe this is wrong.');
       return;
     }
-
-    if (!/^\d{10}$/.test(formData.mobile)) {
-      toast.error('Please enter a valid 10-digit mobile number');
-      return;
-    }
-
-    const cp = dataStore.addChannelPartner({
-      companyName: formData.companyName,
-      contactPerson: formData.contactPerson,
-      mobile: formData.mobile,
-      email: formData.email,
-      location: formData.location,
-      reraNumber: formData.reraNumber,
-      commissionRate: parseFloat(formData.commissionRate) || 2,
-      commissionType: formData.commissionType,
-      paymentTerms: formData.paymentTerms,
-      bankDetails: formData.bankDetails,
-      remarks: formData.remarks,
-      status: 'Active',
-      rating: 0,
-      onboardedDate: localDate()
-    });
-
-    toast.success(`Channel Partner ${cp.id} onboarded successfully!`);
-    handleClearForm();
-    setRefreshKey(prev => prev + 1);
-  };
-
-  const handleDialogSuccess = () => {
-    setRefreshKey(prev => prev + 1);
-  };
-
-  const totalCommission = channelPartners.reduce((sum, cp) => sum + cp.commission, 0);
-
-  const stats = [
-    { label: 'Total CPs', value: channelPartners.length, icon: Briefcase, color: 'blue' },
-    { label: 'Leads MTD', value: channelPartners.reduce((sum, cp) => sum + cp.leadsProvided, 0), icon: Users, color: 'green' },
-    { label: 'CP Bookings', value: channelPartners.reduce((sum, cp) => sum + cp.bookings, 0), icon: TrendingUp, color: 'purple' },
-    { label: 'Commission Due (₹L)', value: (totalCommission / 100000).toFixed(1), icon: DollarSign, color: 'orange' },
-  ];
-
-  const cpPerformance = channelPartners.map(cp => ({
-    cp: cp.name,
-    leads: cp.leadsProvided,
-    visits: cp.visits,
-    bookings: cp.bookings,
-  }));
-
-  const getColorClasses = (color: string) => {
-    const colors: Record<string, { bg: string; text: string; icon: string }> = {
-      blue: { bg: 'bg-blue-50', text: 'text-blue-700', icon: 'text-blue-600' },
-      green: { bg: 'bg-green-50', text: 'text-green-700', icon: 'text-green-600' },
-      purple: { bg: 'bg-purple-50', text: 'text-purple-700', icon: 'text-purple-600' },
-      orange: { bg: 'bg-orange-50', text: 'text-orange-700', icon: 'text-orange-600' },
-    };
-    return colors[color];
-  };
-
-  const getRatingColor = (rating: number) => {
-    if (rating >= 4.5) return 'text-green-600';
-    if (rating >= 4.0) return 'text-blue-600';
-    if (rating >= 3.5) return 'text-orange-600';
-    return 'text-red-600';
+    setBusy(true);
+    try {
+      const assignee = await store.rpc<string | null>('auto_assign_telecaller', { p_project: f.project }).catch(() => null);
+      const lead = await store.addLead({
+        name: f.name.trim(), mobile: normaliseMobile(f.mobile), email: f.email, source: 'Channel Partners', project: f.project, status: 'New',
+        assignedTo: assignee || null, priority: 'Warm', budget: f.budget || undefined, cpId: cp.id, notes: `Registered by ${cp.companyName} via partner portal${f.notes ? `. ${f.notes}` : ''}`,
+      });
+      toast.success(`Buyer registered as ${lead.id}. It is now protected for ${cp.companyName}.`);
+      setF({ ...f, name: '', mobile: '', email: '', budget: '', notes: '' });
+    } catch (err) {
+      const e = toCrmError(err);
+      if (e.code === 'DUPLICATE_LEAD') setConflict('This buyer is already registered with us, so it cannot be claimed.');
+      else toastError(e);
+    } finally { setBusy(false); }
   };
 
   return (
     <div className="space-y-6">
-      <div>
-        <h2 className="text-gray-900">Channel Partner Dashboard</h2>
-        <p className="text-gray-600">Manage CP relationships, track performance, and commission</p>
+      <PageHeader title={`Partner portal · ${cp.companyName}`} subtitle={`Partner ID ${cp.id} · commission ${cp.commissionRate}% of agreement value, ${cp.paymentTerms || 'on booking'}`} />
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <StatCard label="Buyers registered" value={s.leads.length} icon={Users} />
+        <StatCard label="Site visits done" value={s.visits} icon={TrendingUp} tone="green" />
+        <StatCard label="Bookings" value={s.bookings.filter(b => b.stage !== 'Cancelled').length} icon={Briefcase} tone="purple" hint={inrShort(s.bookingValue)} />
+        <StatCard label="Commission due" value={inr(s.due)} icon={IndianRupee} tone="orange" hint={`Paid ${inr(s.paid)} · pipeline ${inrShort(s.accrued - s.earned)}`} />
       </div>
-
-      {/* Stats Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        {stats.map((stat) => {
-          const Icon = stat.icon;
-          const colors = getColorClasses(stat.color);
-
-          return (
-            <div key={stat.label} className="bg-white p-6 rounded-lg border border-gray-200">
-              <div className="flex items-start justify-between">
-                <div>
-                  <p className="text-sm text-gray-600">{stat.label}</p>
-                  <p className="text-gray-900 mt-2">{stat.value}</p>
-                </div>
-                <div className={`p-3 rounded-lg ${colors.bg}`}>
-                  <Icon className={`w-6 h-6 ${colors.icon}`} />
-                </div>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      {/* Quick Actions */}
-      <div className="bg-white p-4 rounded-lg border border-gray-200">
-        <div className="flex flex-wrap gap-3">
-          <button className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700" onClick={handleOnboardCP}>
-            <Briefcase className="w-4 h-4" />
-            Onboard New CP
-          </button>
-          <button className="flex items-center gap-2 px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50" onClick={handleProcessCommissions}>
-            <DollarSign className="w-4 h-4" />
-            Process Commissions
-          </button>
-          <button className="flex items-center gap-2 px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50" onClick={handlePerformanceReport}>
-            <TrendingUp className="w-4 h-4" />
-            Performance Report
-          </button>
+      <Panel title={<span className="inline-flex items-center gap-2"><UserPlus className="w-4 h-4 text-blue-600" />Register a buyer</span>}>
+        <div className="p-4 space-y-3">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <Field label="Buyer name" required><input className={inputCls} value={f.name} onChange={e => setF({ ...f, name: e.target.value })} /></Field>
+            <Field label="Mobile" required><input className={inputCls} value={f.mobile} onChange={e => setF({ ...f, mobile: e.target.value })} inputMode="numeric" /></Field>
+            <Field label="Email"><input className={inputCls} value={f.email} onChange={e => setF({ ...f, email: e.target.value })} /></Field>
+            <Field label="Project"><select className={inputCls} value={f.project} onChange={e => setF({ ...f, project: e.target.value })}>{store.getProjects().map(p => <option key={p.id}>{p.name}</option>)}</select></Field>
+            <Field label="Budget"><select className={inputCls} value={f.budget} onChange={e => setF({ ...f, budget: e.target.value })}><option value="">—</option>{['Below 50L', '50L - 75L', '75L - 1Cr', '1Cr - 1.5Cr', 'Above 1.5Cr'].map(b => <option key={b}>{b}</option>)}</select></Field>
+            <Field label="Notes"><input className={inputCls} value={f.notes} onChange={e => setF({ ...f, notes: e.target.value })} /></Field>
+          </div>
+          {conflict && <div className="flex gap-2 p-3 rounded-lg bg-red-50 border border-red-200 text-sm text-red-800"><AlertTriangle className="w-4 h-4 mt-0.5" />{conflict}</div>}
+          <button className={btnPrimary} onClick={register} disabled={busy}>{busy && <Spinner />}Register buyer</button>
         </div>
-      </div>
-
-      {/* CP Performance Chart */}
-      <div className="bg-white p-6 rounded-lg border border-gray-200">
-        <h3 className="text-gray-900 mb-4">Channel Partner Performance - This Month</h3>
-        <ResponsiveContainer width="100%" height={280}>
-          <BarChart data={cpPerformance}>
-            <CartesianGrid strokeDasharray="3 3" />
-            <XAxis dataKey="cp" />
-            <YAxis allowDecimals={false} />
-            <Tooltip />
-            <Bar dataKey="leads" fill="#3b82f6" name="Leads" />
-            <Bar dataKey="visits" fill="#10b981" name="Visits" />
-            <Bar dataKey="bookings" fill="#f59e0b" name="Bookings" />
-          </BarChart>
-        </ResponsiveContainer>
-      </div>
-
-      {/* Channel Partners List */}
-      <div className="bg-white rounded-lg border border-gray-200">
-        <div className="p-6 border-b border-gray-200 flex justify-between items-center">
-          <div>
-            <h3 className="text-gray-900">Channel Partners Directory</h3>
-            <p className="text-sm text-gray-600">Complete list with performance metrics</p>
-          </div>
-          <div className="flex gap-2">
-            <input
-              type="text"
-              placeholder="Search CPs..."
-              className="px-3 py-2 border border-gray-300 rounded-lg text-sm"
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-            />
-          </div>
-        </div>
-        <div className="overflow-x-auto">
-          <table className="w-full">
-            <thead>
-              <tr className="border-b border-gray-200 bg-gray-50">
-                <th className="text-left py-3 px-4 text-sm text-gray-600">CP ID</th>
-                <th className="text-left py-3 px-4 text-sm text-gray-600">Company Name</th>
-                <th className="text-left py-3 px-4 text-sm text-gray-600">Contact Person</th>
-                <th className="text-left py-3 px-4 text-sm text-gray-600">Contact Details</th>
-                <th className="text-left py-3 px-4 text-sm text-gray-600">Location</th>
-                <th className="text-left py-3 px-4 text-sm text-gray-600">Rating</th>
-                <th className="text-right py-3 px-4 text-sm text-gray-600">Leads</th>
-                <th className="text-right py-3 px-4 text-sm text-gray-600">Visits</th>
-                <th className="text-right py-3 px-4 text-sm text-gray-600">Bookings</th>
-                <th className="text-right py-3 px-4 text-sm text-gray-600">Commission (₹)</th>
-                <th className="text-left py-3 px-4 text-sm text-gray-600">Status</th>
-                <th className="text-right py-3 px-4 text-sm text-gray-600">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {channelPartners.length === 0 && (
-                <tr>
-                  <td colSpan={12} className="py-8 text-center text-gray-500">No channel partners found.</td>
-                </tr>
-              )}
-              {channelPartners.map((cp) => {
-                const conversion = cp.leadsProvided > 0 ? ((cp.bookings / cp.leadsProvided) * 100).toFixed(1) : '0.0';
-
-                return (
-                  <tr key={cp.id} className="border-b border-gray-100 hover:bg-gray-50">
-                    <td className="py-4 px-4">
-                      <span className="text-blue-600 hover:underline cursor-pointer">{cp.id}</span>
-                    </td>
-                    <td className="py-4 px-4 text-gray-900">{cp.name}</td>
-                    <td className="py-4 px-4 text-gray-900">{cp.contact}</td>
-                    <td className="py-4 px-4">
-                      <div className="space-y-1">
-                        <div className="flex items-center gap-1 text-xs text-gray-600">
-                          <Phone className="w-3 h-3" />
-                          {cp.mobile}
-                        </div>
-                        <div className="flex items-center gap-1 text-xs text-gray-500">
-                          <Mail className="w-3 h-3" />
-                          {cp.email}
-                        </div>
-                      </div>
-                    </td>
-                    <td className="py-4 px-4">
-                      <div className="flex items-center gap-1 text-sm text-gray-600">
-                        <MapPin className="w-3 h-3" />
-                        {cp.location}
-                      </div>
-                    </td>
-                    <td className="py-4 px-4">
-                      <div className={`flex items-center gap-1 ${getRatingColor(cp.rating)}`}>
-                        <Star className="w-4 h-4 fill-current" />
-                        <span>{cp.rating}</span>
-                      </div>
-                    </td>
-                    <td className="text-right py-4 px-4 text-gray-900">{cp.leadsProvided}</td>
-                    <td className="text-right py-4 px-4 text-gray-600">{cp.visits}</td>
-                    <td className="text-right py-4 px-4 text-gray-900">{cp.bookings}</td>
-                    <td className="text-right py-4 px-4">
-                      <div className="text-green-600">₹{(cp.commission / 1000).toFixed(0)}k</div>
-                      <div className="text-xs text-gray-500">{conversion}% conv.</div>
-                    </td>
-                    <td className="py-4 px-4">
-                      <span className={`inline-flex px-2 py-1 rounded text-xs ${
-                        cp.status === 'Active' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-700'
-                      }`}>
-                        {cp.status}
-                      </span>
-                    </td>
-                    <td className="py-4 px-4">
-                      <div className="flex justify-end gap-2">
-                        <button className="px-3 py-1 text-xs bg-blue-50 text-blue-600 rounded hover:bg-blue-100" onClick={() => handleViewProfile(cp)}>
-                          View Profile
-                        </button>
-                        <button className="px-3 py-1 text-xs bg-green-50 text-green-600 rounded hover:bg-green-100" onClick={() => handlePayCommission(cp)}>
-                          Pay Commission
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      {/* Onboard New CP Form */}
-      <div className="bg-white p-6 rounded-lg border border-gray-200">
-        <h3 className="text-gray-900 mb-4">Onboard New Channel Partner</h3>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          <div>
-            <label className="block text-sm text-gray-700 mb-2">Company Name *</label>
-            <input
-              type="text"
-              placeholder="ABC Properties Pvt. Ltd."
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
-              value={formData.companyName}
-              onChange={(e) => setFormData({ ...formData, companyName: e.target.value })}
-            />
-          </div>
-          <div>
-            <label className="block text-sm text-gray-700 mb-2">Contact Person *</label>
-            <input
-              type="text"
-              placeholder="Full name"
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
-              value={formData.contactPerson}
-              onChange={(e) => setFormData({ ...formData, contactPerson: e.target.value })}
-            />
-          </div>
-          <div>
-            <label className="block text-sm text-gray-700 mb-2">Mobile Number *</label>
-            <input
-              type="tel"
-              placeholder="10-digit mobile"
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
-              value={formData.mobile}
-              onChange={(e) => setFormData({ ...formData, mobile: e.target.value })}
-            />
-          </div>
-          <div>
-            <label className="block text-sm text-gray-700 mb-2">Email Address *</label>
-            <input
-              type="email"
-              placeholder="contact@company.com"
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
-              value={formData.email}
-              onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-            />
-          </div>
-          <div>
-            <label className="block text-sm text-gray-700 mb-2">Location</label>
-            <input
-              type="text"
-              placeholder="Andheri, Mumbai"
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
-              value={formData.location}
-              onChange={(e) => setFormData({ ...formData, location: e.target.value })}
-            />
-          </div>
-          <div>
-            <label className="block text-sm text-gray-700 mb-2">RERA Registration</label>
-            <input
-              type="text"
-              placeholder="RERA number"
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
-              value={formData.reraNumber}
-              onChange={(e) => setFormData({ ...formData, reraNumber: e.target.value })}
-            />
-          </div>
-          <div>
-            <label className="block text-sm text-gray-700 mb-2">Commission Rate (%)</label>
-            <input
-              type="number"
-              placeholder="e.g., 2.5"
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
-              value={formData.commissionRate}
-              onChange={(e) => setFormData({ ...formData, commissionRate: e.target.value })}
-            />
-          </div>
-          <div>
-            <label className="block text-sm text-gray-700 mb-2">Commission Type</label>
-            <select className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm" value={formData.commissionType} onChange={(e) => setFormData({ ...formData, commissionType: e.target.value })}>
-              <option>Percentage of Deal Value</option>
-              <option>Fixed Amount per Booking</option>
-            </select>
-          </div>
-          <div>
-            <label className="block text-sm text-gray-700 mb-2">Payment Terms</label>
-            <select className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm" value={formData.paymentTerms} onChange={(e) => setFormData({ ...formData, paymentTerms: e.target.value })}>
-              <option>On Booking</option>
-              <option>On Agreement</option>
-              <option>On Possession</option>
-            </select>
-          </div>
-          <div className="md:col-span-2 lg:col-span-3">
-            <label className="block text-sm text-gray-700 mb-2">Bank Details</label>
-            <textarea
-              rows={2}
-              placeholder="Account number, IFSC, bank name..."
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
-              value={formData.bankDetails}
-              onChange={(e) => setFormData({ ...formData, bankDetails: e.target.value })}
-            />
-          </div>
-          <div className="md:col-span-2 lg:col-span-3">
-            <label className="block text-sm text-gray-700 mb-2">Remarks / Notes</label>
-            <textarea
-              rows={2}
-              placeholder="Any additional information..."
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
-              value={formData.remarks}
-              onChange={(e) => setFormData({ ...formData, remarks: e.target.value })}
-            />
-          </div>
-          <div className="md:col-span-2 lg:col-span-3 flex gap-3">
-            <button className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm" onClick={handleSubmitInlineForm}>
-              Onboard Channel Partner
-            </button>
-            <button className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 text-sm" onClick={handleClearForm}>
-              Clear Form
-            </button>
-          </div>
-        </div>
-      </div>
-
-      {/* Commission Processing */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div className="bg-white p-6 rounded-lg border border-gray-200">
-          <h3 className="text-gray-900 mb-4">Pending Commission Payments</h3>
-          <div className="space-y-3">
-            {channelPartners.filter(cp => cp.commission > 0).length === 0 && (
-              <p className="text-sm text-gray-500">No commission due yet.</p>
-            )}
-            {channelPartners.filter(cp => cp.commission > 0).map((cp) => (
-              <div key={cp.id} className="flex items-center justify-between p-3 border border-gray-200 rounded-lg">
-                <div>
-                  <div className="text-gray-900">{cp.name}</div>
-                  <div className="text-xs text-gray-500">{cp.bookings} bookings this month</div>
-                </div>
-                <div className="text-right">
-                  <div className="text-green-600">₹{(cp.commission / 1000).toFixed(0)}k</div>
-                  <button className="text-xs text-blue-600 hover:underline mt-1" onClick={() => handlePayCommission(cp)}>Process Payment</button>
-                </div>
-              </div>
-            ))}
-          </div>
-          <div className="mt-4 pt-4 border-t border-gray-200 flex justify-between">
-            <span className="text-gray-600">Total Pending</span>
-            <span className="text-gray-900">₹{(totalCommission / 100000).toFixed(2)}L</span>
-          </div>
-        </div>
-
-        <div className="bg-white p-6 rounded-lg border border-gray-200">
-          <h3 className="text-gray-900 mb-4">Top Performing CPs - This Month</h3>
-          <div className="space-y-3">
-            {[...channelPartners]
-              .sort((a, b) => b.bookings - a.bookings)
-              .slice(0, 5)
-              .map((cp, index) => (
-                <div key={cp.id} className="flex items-center gap-3 p-3 border border-gray-200 rounded-lg">
-                  <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm ${
-                    index === 0 ? 'bg-yellow-100 text-yellow-700' :
-                    index === 1 ? 'bg-gray-200 text-gray-700' :
-                    index === 2 ? 'bg-orange-100 text-orange-700' :
-                    'bg-blue-50 text-blue-600'
-                  }`}>
-                    #{index + 1}
-                  </div>
-                  <div className="flex-1">
-                    <div className="text-gray-900">{cp.name}</div>
-                    <div className="text-xs text-gray-500">{cp.bookings} bookings • {cp.leadsProvided} leads</div>
-                  </div>
-                  <div className="text-right">
-                    <div className={`flex items-center gap-1 ${getRatingColor(cp.rating)}`}>
-                      <Star className="w-3 h-3 fill-current" />
-                      <span className="text-sm">{cp.rating}</span>
-                    </div>
-                  </div>
-                </div>
-              ))}
-          </div>
-        </div>
-      </div>
-
-      {/* Dialogs */}
-      {showOnboardDialog && (
-        <OnboardCPDialog
-          onClose={() => setShowOnboardDialog(false)}
-          onSuccess={handleDialogSuccess}
-        />
-      )}
-      {showProfileDialog && selectedCP && (
-        <CPProfileDialog
-          onClose={() => setShowProfileDialog(false)}
-          cp={selectedCP}
-        />
-      )}
-      {showCommissionDialog && selectedCP && (
-        <ProcessCommissionDialog
-          onClose={() => setShowCommissionDialog(false)}
-          onSuccess={handleDialogSuccess}
-          cp={selectedCP}
-        />
-      )}
+      </Panel>
+      <Panel>
+        <Tabs active={tab} onChange={setTab} tabs={[{ id: 'leads', label: 'My buyers', count: s.leads.length }, { id: 'bookings', label: 'Bookings & commission', count: s.bookings.length }, { id: 'payouts', label: 'Payouts', count: s.payouts.length }]} />
+        {tab === 'leads' && <CPLeadsTable leads={s.leads} />}
+        {tab === 'bookings' && <CPBookingsTable stats={s} />}
+        {tab === 'payouts' && <PayoutTable payouts={s.payouts} />}
+      </Panel>
     </div>
   );
 }

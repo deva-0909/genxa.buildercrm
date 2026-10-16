@@ -1,6 +1,7 @@
 import { Calendar, CheckCircle, FileText, DollarSign, MapPin, Users, AlertTriangle } from 'lucide-react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, BarChart, Bar, XAxis, YAxis, CartesianGrid, Legend } from 'recharts';
 import { useState } from 'react';
+import { toast } from 'sonner';
 import { getDataStore, isManagerRole, SiteVisit, localDate } from '../lib/dataStore';
 import { CreateBookingDialog } from './CreateBookingDialog';
 import { CheckInDialog } from './CheckInDialog';
@@ -37,7 +38,7 @@ export function SalesDashboard() {
   const leads = dataStore.getLeads();
   const projects = dataStore.getProjects();
   const visits = allVisits.filter(v => scopeNames.includes(v.salesExec));
-  const bookings = allBookings.filter(b => scopeNames.includes(b.salesExec));
+  const bookings = allBookings.filter(b => scopeNames.includes(b.salesExec) && b.stage !== 'Cancelled');
   const bookedLeadIds = new Set(allBookings.map(b => b.leadId));
 
   const today = todayStr();
@@ -107,7 +108,7 @@ export function SalesDashboard() {
 
   const locationOf = (projectName: string) => projects.find(p => p.name === projectName)?.location ?? '';
 
-  const handleCheckIn = (visit?: any) => { if (visit) setSelectedVisit(visit); setShowCheckInDialog(true); };
+  const handleCheckIn = (visit?: any) => { if (!visit) { toast.info('No visits scheduled for today'); return; } setSelectedVisit(visit); setShowCheckInDialog(true); };
   const handleReschedule = (visit: any) => { setSelectedVisit(visit); setShowRescheduleDialog(true); };
   const handleSendProposal = (lead: any) => { setSelectedLead(lead); setShowProposalDialog(true); };
   const handleUpdateLead = (lead: any) => { setSelectedLead(lead); setShowUpdateDialog(true); };
@@ -370,7 +371,7 @@ export function SalesDashboard() {
           onClose={() => setShowBookingDialog(false)}
         />
       )}
-      {showCheckInDialog && (
+      {showCheckInDialog && selectedVisit && (
         <CheckInDialog visit={selectedVisit} onSuccess={handleDialogSuccess} onClose={() => setShowCheckInDialog(false)} />
       )}
       {showRescheduleDialog && selectedVisit && (

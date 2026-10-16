@@ -1,259 +1,155 @@
-import { XCircle, DollarSign, CheckCircle, Clock, FileText } from 'lucide-react';
 import { useState } from 'react';
-import { Button } from './ui/button';
+import { XCircle, Clock, CheckCircle, IndianRupee, Plus, Printer, ThumbsUp, ThumbsDown, Banknote } from 'lucide-react';
 import { toast } from 'sonner';
-
-interface Cancellation {
-  id: string;
-  bookingId: string;
-  customer: string;
-  mobile: string;
-  project: string;
-  unit: string;
-  bookingAmount: number;
-  refundableAmount: number;
-  deductions: number;
-  reason: string;
-  status: 'Requested' | 'Under Review' | 'Approved' | 'Refunded' | 'Rejected';
-  requestDate: string;
-  approvalDate?: string;
-  refundDate?: string;
-  approvedBy?: string;
-}
+import { getDataStore, Cancellation, Approval, localDate, toastError } from '../lib/dataStore';
+import { liveBookings, bookingFinance, canApprove } from '../lib/crm';
+import { inr, inrShort, fmtDate, daysBetween } from '../lib/format';
+import { printCancellationLetter } from '../lib/documents';
+import { PageHeader, StatCard, Panel, Tabs, Badge, thCls, tdCls, btnPrimary, btnSecondary, btnSmall, btnSmallPrimary, inputCls, EmptyState, Modal, Field, Spinner } from './common';
+import { BookingDetail } from './BookingParts';
+import { DecideDialog } from './Approvals';
 
 export function CancellationRefunds() {
-  const [activeTab, setActiveTab] = useState('pending');
-
-  const [cancellations] = useState<Cancellation[]>([
-    { id: 'CAN001', bookingId: 'BK130', customer: 'Suresh Kumar', mobile: '9876543220', project: 'Metro Plaza', unit: 'A-301', bookingAmount: 3590000, refundableAmount: 3230000, deductions: 360000, reason: 'Job relocation to another city', status: 'Requested', requestDate: '2025-02-03' },
-    { id: 'CAN002', bookingId: 'BK129', customer: 'Neha Gupta', mobile: '9876543221', project: 'Skyline Heights', unit: 'C-205', bookingAmount: 4200000, refundableAmount: 3780000, deductions: 420000, reason: 'Financial constraints', status: 'Under Review', requestDate: '2025-02-01' },
-    { id: 'CAN003', bookingId: 'BK128', customer: 'Arun Patel', mobile: '9876543222', project: 'Green Valley', unit: 'B-102', bookingAmount: 6800000, refundableAmount: 6120000, deductions: 680000, reason: 'Found better alternative', status: 'Approved', requestDate: '2025-01-28', approvalDate: '2025-02-02', approvedBy: 'Amit Patel' },
-    { id: 'CAN004', bookingId: 'BK127', customer: 'Deepika Singh', mobile: '9876543223', project: 'Ocean View', unit: 'D-401', bookingAmount: 8200000, refundableAmount: 7380000, deductions: 820000, reason: 'Medical emergency', status: 'Refunded', requestDate: '2025-01-20', approvalDate: '2025-01-25', refundDate: '2025-02-01', approvedBy: 'Amit Patel' },
-    { id: 'CAN005', bookingId: 'BK126', customer: 'Rahul Verma', mobile: '9876543224', project: 'Metro Plaza', unit: 'B-205', bookingAmount: 3200000, refundableAmount: 0, deductions: 500000, reason: 'Changed mind', status: 'Rejected', requestDate: '2025-01-15', approvalDate: '2025-01-18', approvedBy: 'Amit Patel' },
-  ]);
-
-  const stats = [
-    { label: 'Pending Requests', value: cancellations.filter(c => c.status === 'Requested' || c.status === 'Under Review').length, icon: Clock, color: 'orange' },
-    { label: 'Approved MTD', value: cancellations.filter(c => c.status === 'Approved' || c.status === 'Refunded').length, icon: CheckCircle, color: 'green' },
-    { label: 'Refund Amount (₹Cr)', value: (cancellations.filter(c => c.status === 'Refunded').reduce((sum, c) => sum + c.refundableAmount, 0) / 10000000).toFixed(2), icon: DollarSign, color: 'blue' },
-    { label: 'Rejection Rate', value: '8.3%', icon: XCircle, color: 'red' },
-  ];
-
-  const pendingCancellations = cancellations.filter(c => c.status === 'Requested' || c.status === 'Under Review');
-  const approvedCancellations = cancellations.filter(c => c.status === 'Approved');
-  const refundedCancellations = cancellations.filter(c => c.status === 'Refunded');
-
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case 'Requested': return 'bg-blue-100 text-blue-700';
-      case 'Under Review': return 'bg-yellow-100 text-yellow-700';
-      case 'Approved': return 'bg-green-100 text-green-700';
-      case 'Refunded': return 'bg-purple-100 text-purple-700';
-      case 'Rejected': return 'bg-red-100 text-red-700';
-      default: return 'bg-gray-100 text-gray-700';
-    }
-  };
-
-  const getColorClasses = (color: string) => {
-    const colors: Record<string, { bg: string; text: string; icon: string }> = {
-      blue: { bg: 'bg-blue-50', text: 'text-blue-700', icon: 'text-blue-600' },
-      green: { bg: 'bg-green-50', text: 'text-green-700', icon: 'text-green-600' },
-      red: { bg: 'bg-red-50', text: 'text-red-700', icon: 'text-red-600' },
-      orange: { bg: 'bg-orange-50', text: 'text-orange-700', icon: 'text-orange-600' },
-    };
-    return colors[color];
-  };
-
-  const handleApprove = (_id: string) => {
-    toast.success('Cancellation request approved');
-  };
-
-  const handleReject = (_id: string) => {
-    toast.error('Cancellation request rejected');
-  };
-
-  const handleProcessRefund = (_id: string) => {
-    toast.success('Processing refund...');
-  };
+  const store = getDataStore();
+  const persona = store.getPersona();
+  const [tab, setTab] = useState('open');
+  const [create, setCreate] = useState(false);
+  const [refund, setRefund] = useState<Cancellation | null>(null);
+  const [decide, setDecide] = useState<{ a: Approval; approve: boolean } | null>(null);
+  const [detail, setDetail] = useState<string | null>(null);
+  const list = store.list<Cancellation>('cancellations');
+  const approvals = store.list<Approval>('approvals').filter(a => a.type === 'Cancellation');
+  const bookings = new Map(store.getBookings().map(b => [b.id, b]));
+  const open = list.filter(c => ['Requested', 'Approved'].includes(c.status));
+  const closed = list.filter(c => ['Refunded', 'Rejected'].includes(c.status));
+  const rows = tab === 'open' ? open : closed;
+  const canRefund = ['Admin', 'Finance'].includes(persona.role);
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-gray-900">Cancellation & Refunds</h2>
-          <p className="text-gray-600">Manage booking cancellations and refund processing</p>
-        </div>
+      <PageHeader title="Cancellations & Refunds" subtitle="Deductions follow the policy automatically. Every cancellation needs approval; the refund is posted to the ledger and the unit goes back on sale."
+        actions={<button className={btnPrimary} onClick={() => setCreate(true)}><Plus className="w-4 h-4" />Request cancellation</button>} />
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <StatCard label="Awaiting approval" value={list.filter(c => c.status === 'Requested').length} icon={Clock} tone="orange" />
+        <StatCard label="Approved, refund due" value={list.filter(c => c.status === 'Approved').length} icon={IndianRupee} tone="blue" hint={inrShort(list.filter(c => c.status === 'Approved').reduce((s, c) => s + c.refundAmount, 0))} />
+        <StatCard label="Refunded" value={inrShort(list.filter(c => c.status === 'Refunded').reduce((s, c) => s + c.refundAmount, 0))} icon={CheckCircle} tone="green" />
+        <StatCard label="Deductions retained" value={inrShort(list.filter(c => ['Approved', 'Refunded'].includes(c.status)).reduce((s, c) => s + c.deductionAmount, 0))} icon={XCircle} tone="red" />
       </div>
-
-      {/* Stats Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        {stats.map((stat) => {
-          const Icon = stat.icon;
-          const colors = getColorClasses(stat.color);
-
-          return (
-            <div key={stat.label} className="bg-white p-6 rounded-lg border border-gray-200">
-              <div className="flex items-start justify-between">
-                <div>
-                  <p className="text-sm text-gray-600">{stat.label}</p>
-                  <p className="text-gray-900 mt-2">{stat.value}</p>
-                </div>
-                <div className={`p-3 rounded-lg ${colors.bg}`}>
-                  <Icon className={`w-6 h-6 ${colors.icon}`} />
-                </div>
-              </div>
-            </div>
-          );
-        })}
+      <div className="p-3 rounded-lg bg-blue-50 border border-blue-200 text-sm text-blue-900">
+        Policy: 10% of the amount paid is deducted if cancelled within 30 days of booking, 20% within 90 days, 25% after that. GST paid is refunded separately by credit note.
       </div>
-
-      {/* Refund Policy */}
-      <div className="bg-white p-6 rounded-lg border border-gray-200">
-        <h3 className="text-gray-900 mb-4">Refund Policy Guidelines</h3>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div className="p-4 border border-gray-200 rounded-lg">
-            <div className="text-sm text-gray-900 mb-2">Within 30 Days</div>
-            <div className="text-xs text-gray-600 mb-2">90% refund after deducting booking charges</div>
-            <div className="text-green-600">Refund: 90%</div>
-          </div>
-          <div className="p-4 border border-gray-200 rounded-lg">
-            <div className="text-sm text-gray-900 mb-2">31-90 Days</div>
-            <div className="text-xs text-gray-600 mb-2">80% refund after deducting charges</div>
-            <div className="text-yellow-600">Refund: 80%</div>
-          </div>
-          <div className="p-4 border border-gray-200 rounded-lg">
-            <div className="text-sm text-gray-900 mb-2">After 90 Days</div>
-            <div className="text-xs text-gray-600 mb-2">As per agreement terms</div>
-            <div className="text-red-600">Case by Case</div>
-          </div>
-        </div>
-      </div>
-
-      {/* Tabs */}
-      <div className="bg-white rounded-lg border border-gray-200">
-        <div className="border-b border-gray-200">
-          <div className="flex gap-4 px-6">
-            {([
-              ['pending', `Pending (${pendingCancellations.length})`],
-              ['approved', `Approved (${approvedCancellations.length})`],
-              ['refunded', `Refunded (${refundedCancellations.length})`],
-              ['all', `All (${cancellations.length})`],
-            ] as const).map(([key, label]) => (
-              <button
-                key={key}
-                onClick={() => setActiveTab(key)}
-                className={`py-4 px-2 border-b-2 transition-colors ${
-                  activeTab === key
-                    ? 'border-blue-600 text-blue-600'
-                    : 'border-transparent text-gray-600 hover:text-gray-900'
-                }`}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div className="p-6">
-          <div className="space-y-4">
-            {(activeTab === 'pending' ? pendingCancellations :
-              activeTab === 'approved' ? approvedCancellations :
-              activeTab === 'refunded' ? refundedCancellations :
-              cancellations).map((cancellation) => (
-              <div key={cancellation.id} className="border border-gray-200 rounded-lg p-4 hover:border-blue-300 transition-colors">
-                <div className="flex items-start justify-between mb-3">
-                  <div className="flex-1">
-                    <div className="flex items-center gap-3 mb-2">
-                      <XCircle className="w-5 h-5 text-red-600" />
-                      <span className="text-gray-900">{cancellation.customer}</span>
-                      <span className={`px-2 py-1 rounded-full text-xs ${getStatusColor(cancellation.status)}`}>
-                        {cancellation.status}
+      <Panel>
+        <Tabs active={tab} onChange={setTab} tabs={[{ id: 'open', label: 'Open', count: open.length }, { id: 'closed', label: 'Closed', count: closed.length }]} />
+        <div className="overflow-x-auto">
+          <table className="w-full">
+            <thead className="bg-gray-50"><tr>{['Request', 'Customer', 'Unit', 'Reason', 'Paid', 'Deduction', 'Refund', 'Status', ''].map(h => <th key={h} className={thCls}>{h}</th>)}</tr></thead>
+            <tbody className="divide-y divide-gray-100">
+              {rows.map(c => {
+                const b = bookings.get(c.bookingId);
+                const ap = approvals.find(a => a.refId === c.id && a.status === 'Pending');
+                return (
+                  <tr key={c.id}>
+                    <td className={tdCls}>{c.id}<div className="text-xs text-gray-500 whitespace-nowrap">{fmtDate(c.requestDate)} · {c.requestedBy}</div></td>
+                    <td className={tdCls}><button className="hover:underline text-left" onClick={() => b && setDetail(b.id)}>{b?.customer}</button><div className="text-xs text-gray-500">{c.bookingId}</div></td>
+                    <td className={`${tdCls} whitespace-nowrap`}>{b?.unit}<div className="text-xs text-gray-500">{b?.project}</div></td>
+                    <td className={`${tdCls} max-w-[220px]`}><span className="line-clamp-2" title={c.reason}>{c.reason}</span></td>
+                    <td className={`${tdCls} whitespace-nowrap`}>{inr(c.paidAmount)}</td>
+                    <td className={`${tdCls} whitespace-nowrap text-red-700`}>{inr(c.deductionAmount)}<div className="text-xs">{c.deductionPct}%</div></td>
+                    <td className={`${tdCls} whitespace-nowrap`}>{inr(c.refundAmount)}</td>
+                    <td className={tdCls}><Badge>{c.status}</Badge>{c.approvedBy && <div className="text-xs text-gray-500">by {c.approvedBy}</div>}{c.refundReference && <div className="text-xs text-gray-500">{c.refundReference}</div>}</td>
+                    <td className={`${tdCls} whitespace-nowrap`}>
+                      <span className="inline-flex flex-wrap gap-1">
+                        {ap && canApprove(persona, ap) && <>
+                          <button className={btnSmallPrimary} onClick={() => setDecide({ a: ap, approve: true })}><ThumbsUp className="w-3.5 h-3.5" />Approve</button>
+                          <button className={btnSmall} onClick={() => setDecide({ a: ap, approve: false })}><ThumbsDown className="w-3.5 h-3.5" />Reject</button>
+                        </>}
+                        {ap && !canApprove(persona, ap) && <span className="text-xs text-gray-500">Waiting for MIS Head / Finance</span>}
+                        {c.status === 'Approved' && canRefund && <button className={btnSmallPrimary} onClick={() => setRefund(c)}><Banknote className="w-3.5 h-3.5" />Pay refund</button>}
+                        <button className={btnSmall} onClick={() => printCancellationLetter(c)}><Printer className="w-3.5 h-3.5" />Statement</button>
                       </span>
-                    </div>
-                    <div className="grid grid-cols-5 gap-4 text-sm">
-                      <div>
-                        <span className="text-gray-600">Booking ID:</span>
-                        <div className="text-gray-900">{cancellation.bookingId}</div>
-                      </div>
-                      <div>
-                        <span className="text-gray-600">Project:</span>
-                        <div className="text-gray-900">{cancellation.project}</div>
-                      </div>
-                      <div>
-                        <span className="text-gray-600">Unit:</span>
-                        <div className="text-gray-900">{cancellation.unit}</div>
-                      </div>
-                      <div>
-                        <span className="text-gray-600">Booking Amount:</span>
-                        <div className="text-gray-900">₹{(cancellation.bookingAmount / 100000).toFixed(1)}L</div>
-                      </div>
-                      <div>
-                        <span className="text-gray-600">Request Date:</span>
-                        <div className="text-gray-900">{new Date(cancellation.requestDate).toLocaleDateString()}</div>
-                      </div>
-                    </div>
-                    <div className="grid grid-cols-5 gap-4 text-sm mt-2">
-                      <div>
-                        <span className="text-gray-600">Refundable:</span>
-                        <div className="text-green-600">₹{(cancellation.refundableAmount / 100000).toFixed(1)}L</div>
-                      </div>
-                      <div>
-                        <span className="text-gray-600">Deductions:</span>
-                        <div className="text-red-600">₹{(cancellation.deductions / 100000).toFixed(1)}L</div>
-                      </div>
-                      <div>
-                        <span className="text-gray-600">Mobile:</span>
-                        <div className="text-gray-900">{cancellation.mobile}</div>
-                      </div>
-                      {cancellation.approvedBy && (
-                        <div>
-                          <span className="text-gray-600">Approved By:</span>
-                          <div className="text-gray-900">{cancellation.approvedBy}</div>
-                        </div>
-                      )}
-                      {cancellation.refundDate && (
-                        <div>
-                          <span className="text-gray-600">Refund Date:</span>
-                          <div className="text-gray-900">{new Date(cancellation.refundDate).toLocaleDateString()}</div>
-                        </div>
-                      )}
-                    </div>
-                    <div className="mt-2 text-sm">
-                      <span className="text-gray-600">Reason: </span>
-                      <span className="text-gray-900">{cancellation.reason}</span>
-                    </div>
-                  </div>
-                  <div className="flex gap-2">
-                    {cancellation.status === 'Requested' && (
-                      <>
-                        <Button size="sm" className="bg-green-600 hover:bg-green-700 text-white" onClick={() => handleApprove(cancellation.id)}>
-                          <CheckCircle className="w-4 h-4 mr-1" />
-                          Approve
-                        </Button>
-                        <Button size="sm" className="bg-red-600 hover:bg-red-700 text-white" onClick={() => handleReject(cancellation.id)}>
-                          Reject
-                        </Button>
-                      </>
-                    )}
-                    {cancellation.status === 'Approved' && (
-                      <Button size="sm" className="bg-blue-600 hover:bg-blue-700 text-white" onClick={() => handleProcessRefund(cancellation.id)}>
-                        <DollarSign className="w-4 h-4 mr-1" />
-                        Process Refund
-                      </Button>
-                    )}
-                    {cancellation.status === 'Refunded' && (
-                      <Button size="sm" variant="outline" onClick={() => toast.info('Viewing refund details...')}>
-                        <FileText className="w-4 h-4 mr-1" />
-                        View Details
-                      </Button>
-                    )}
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          {rows.length === 0 && <EmptyState>Nothing here.</EmptyState>}
         </div>
-      </div>
+      </Panel>
+      {create && <RequestDialog onClose={() => setCreate(false)} />}
+      {refund && <RefundDialog c={refund} onClose={() => setRefund(null)} />}
+      {decide && <DecideDialog approval={decide.a} approve={decide.approve} onClose={() => setDecide(null)} />}
+      {detail && <BookingDetail bookingId={detail} onClose={() => setDetail(null)} />}
     </div>
+  );
+}
+
+function RequestDialog({ onClose }: { onClose: () => void }) {
+  const store = getDataStore();
+  const pending = new Set(store.list<Cancellation>('cancellations').filter(c => c.status !== 'Rejected').map(c => c.bookingId));
+  const options = liveBookings().filter(b => !pending.has(b.id) && !['Possession Done', 'Completed'].includes(b.stage));
+  const [bookingId, setBookingId] = useState('');
+  const [reason, setReason] = useState('');
+  const [busy, setBusy] = useState(false);
+  const b = options.find(x => x.id === bookingId);
+  const f = b ? bookingFinance(b) : null;
+  const age = b ? daysBetween(b.bookingDate, localDate()) : 0;
+  const pct = age <= 30 ? 10 : age <= 90 ? 20 : 25;
+  const save = async () => {
+    if (!b) { toast.error('Choose a booking'); return; }
+    if (reason.trim().length < 5) { toast.error('Enter the reason for cancellation'); return; }
+    setBusy(true);
+    try {
+      const c = await store.insert<Cancellation>('cancellations', { bookingId: b.id, reason: reason.trim(), requestDate: localDate(), requestedBy: store.getPersona().name, status: 'Requested' });
+      toast.success(`Cancellation ${c.id} requested: refund ${inr(c.refundAmount)} after ${c.deductionPct}% deduction. Sent for approval.`);
+      onClose();
+    } catch (err) { toastError(err); } finally { setBusy(false); }
+  };
+  return (
+    <Modal open onClose={onClose} title="Request cancellation"
+      footer={<><button className={btnSecondary} onClick={onClose}>Cancel</button><button className={btnPrimary} onClick={save} disabled={busy}>{busy && <Spinner />}Submit for approval</button></>}>
+      <div className="space-y-4">
+        <Field label="Booking" required>
+          <select className={inputCls} value={bookingId} onChange={e => setBookingId(e.target.value)}>
+            <option value="">Select booking</option>
+            {options.map(o => <option key={o.id} value={o.id}>{o.customer} · {o.project} {o.unit} · {o.id}</option>)}
+          </select>
+        </Field>
+        {b && f && (
+          <div className="grid grid-cols-3 gap-3 text-sm">
+            <div className="p-2 rounded bg-gray-50"><div className="text-xs text-gray-500">Paid so far</div>{inr(f.paid)}</div>
+            <div className="p-2 rounded bg-red-50"><div className="text-xs text-gray-500">Deduction ({pct}%, day {age})</div>{inr(Math.round(f.paid * pct / 100))}</div>
+            <div className="p-2 rounded bg-green-50"><div className="text-xs text-gray-500">Estimated refund</div>{inr(f.paid - Math.round(f.paid * pct / 100))}</div>
+          </div>
+        )}
+        <Field label="Reason" required><textarea rows={3} className={inputCls} value={reason} onChange={e => setReason(e.target.value)} /></Field>
+      </div>
+    </Modal>
+  );
+}
+
+function RefundDialog({ c, onClose }: { c: Cancellation; onClose: () => void }) {
+  const store = getDataStore();
+  const [ref, setRef] = useState('');
+  const [date, setDate] = useState(localDate());
+  const [busy, setBusy] = useState(false);
+  const save = async () => {
+    if (!ref.trim()) { toast.error('Enter the UTR / cheque number of the refund'); return; }
+    if (date > localDate()) { toast.error('Date cannot be in the future'); return; }
+    setBusy(true);
+    try {
+      await store.patch('cancellations', c.id, { status: 'Refunded', refundReference: ref.trim(), refundDate: date });
+      toast.success(`Refund of ${inr(c.refundAmount)} recorded and posted to the ledger`);
+      onClose();
+    } catch (err) { toastError(err); } finally { setBusy(false); }
+  };
+  return (
+    <Modal open onClose={onClose} title="Pay refund" subtitle={`${c.id} · ${inr(c.refundAmount)}`} size="sm"
+      footer={<><button className={btnSecondary} onClick={onClose}>Cancel</button><button className={btnPrimary} onClick={save} disabled={busy}>{busy && <Spinner />}Record refund</button></>}>
+      <div className="space-y-4">
+        <Field label="UTR / cheque no." required><input className={inputCls} value={ref} onChange={e => setRef(e.target.value)} /></Field>
+        <Field label="Paid on" required><input type="date" max={localDate()} className={inputCls} value={date} onChange={e => setDate(e.target.value)} /></Field>
+      </div>
+    </Modal>
   );
 }

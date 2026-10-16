@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { X, Calendar } from 'lucide-react';
-import { getDataStore } from '../lib/dataStore';
+import { getDataStore, localDate, toastError } from '../lib/dataStore';
+import { isValidMobile, normaliseMobile, fmtDate } from '../lib/format';
 import { toast } from 'sonner';
 
 interface ScheduleVisitDialogProps {
@@ -37,42 +38,59 @@ export function ScheduleVisitDialog({
   const dataStore = getDataStore();
   const projects = dataStore.getProjects();
   const users = dataStore.getUsers();
-  const salesExecs = users.filter(u => u.role === 'Sales Executive');
+  const salesExecs = users.filter(u => u.role === 'Sales Executive' && u.status === 'Active');
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const [saving, setSaving] = useState(false);
+  const todayStr = localDate();
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
     if (!formData.customer || !formData.mobile || !formData.project || !formData.date || !formData.time || !formData.salesExec) {
       toast.error('Please fill all required fields');
       return;
     }
-
-    // Create site visit
-    const visit = dataStore.addVisit({
-      leadId: leadId || 'NEW',
-      customer: formData.customer,
-      mobile: formData.mobile,
-      project: formData.project,
-      date: formData.date,
-      time: formData.time,
-      status: 'Scheduled',
-      telecaller: formData.telecaller || 'N/A',
-      salesExec: formData.salesExec,
-      confirmationSent: false,
-      notes: formData.notes
-    });
-
-    // Update lead status if leadId provided
-    if (leadId) {
-      dataStore.updateLead(leadId, {
-        status: 'Visit Scheduled',
-        nextFollowUp: `${formData.date} ${formData.time}`
-      });
+    if (!isValidMobile(formData.mobile)) {
+      toast.error('Enter a valid 10-digit mobile number');
+      return;
+    }
+    const when = new Date(`${formData.date}T${formData.time}`);
+    if (formData.date < todayStr || when.getTime() < Date.now() - 5 * 60000) {
+      toast.error('A visit cannot be scheduled in the past. Choose a later date or time.');
+      return;
     }
 
-    toast.success(`Site visit ${visit.id} scheduled successfully!`);
-    onSuccess();
-    onClose();
+    setSaving(true);
+    try {
+      const visit = await dataStore.addVisit({
+        leadId: leadId || 'NEW',
+        customer: formData.customer,
+        mobile: normaliseMobile(formData.mobile),
+        project: formData.project,
+        date: formData.date,
+        time: formData.time,
+        status: 'Scheduled',
+        telecaller: formData.telecaller || 'N/A',
+        salesExec: formData.salesExec,
+        confirmationSent: false,
+        notes: formData.notes
+      });
+
+      if (leadId) {
+        dataStore.updateLead(leadId, {
+          status: 'Visit Scheduled',
+          nextFollowUp: formData.date
+        });
+      }
+
+      toast.success(`Site visit ${visit.id} scheduled for ${fmtDate(formData.date)} at ${formData.time}`);
+      onSuccess();
+      onClose();
+    } catch (err) {
+      toastError(err, 'Could not schedule the visit');
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -144,6 +162,7 @@ export function ScheduleVisitDialog({
               <label className="block text-sm text-gray-700 mb-2">Visit Date *</label>
               <input
                 type="date"
+                min={todayStr}
                 className="w-full px-3 py-2 border border-gray-300 rounded-lg"
                 value={formData.date}
                 onChange={(e) => setFormData({...formData, date: e.target.value})}
@@ -175,7 +194,8 @@ export function ScheduleVisitDialog({
           <div className="flex gap-3 pt-4">
             <button
               type="submit"
-              className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+              disabled={saving}
+              className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
             >
               <Calendar className="w-4 h-4 inline mr-2" />
               Schedule Visit

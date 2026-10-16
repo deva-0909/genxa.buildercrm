@@ -8,6 +8,8 @@ import { UpdateLeadDialog } from './UpdateLeadDialog';
 import { ViewTargetsDialog } from './ViewTargetsDialog';
 import { MyPerformanceDialog } from './MyPerformanceDialog';
 import { toast } from 'sonner';
+import { leadScore, slaBreaches } from '../lib/crm';
+import { Badge, ContactButtons } from './common';
 
 const todayStr = () => localDate();
 const followUpDate = (l: Lead) => (l.nextFollowUp ? l.nextFollowUp.slice(0, 10) : null);
@@ -42,8 +44,13 @@ export function TelecallerDashboard() {
   // Action list: overdue first, then due today, then untouched new leads, then everything else open
   const rank = (l: Lead) => (isOverdue(l) ? 0 : isDueToday(l) ? 1 : isUntouched(l) ? 2 : 3);
   const myLeads = scopedLeads
-    .filter(l => l.status !== 'Dead')
-    .sort((a, b) => rank(a) - rank(b) || (b.priority === 'Hot' ? 1 : 0) - (a.priority === 'Hot' ? 1 : 0));
+    .filter(l => l.status !== 'Dead' && l.status !== 'Booked')
+    .map(l => ({ ...l, score: leadScore(l) }))
+    .sort((a, b) => rank(a) - rank(b) || b.score.score - a.score.score);
+  const sla = slaBreaches(scopedLeads);
+  const monthKeyNow = todayStr().slice(0, 7);
+  const visitsThisMonth = visits.filter(v => scopeNames.includes(v.telecaller) && localDate(new Date(v.createdAt)).startsWith(monthKeyNow)).length;
+  const callsToday = dataStore.list<any>('callLogs').filter(c => scopeNames.includes(c.caller) && localDate(new Date(c.calledAt)) === todayStr()).length;
 
   const visitsFixed = visits.filter(v => scopeNames.includes(v.telecaller) && ['Scheduled', 'Confirmed', 'Completed'].includes(v.status)).length;
   const contacted = scopedLeads.filter(l => (l.callAttempts || 0) > 0).length;
@@ -63,7 +70,7 @@ export function TelecallerDashboard() {
   };
 
   const todayStats = [
-    { label: 'Untouched New Leads', value: scopedLeads.filter(isUntouched).length, icon: Phone, color: 'blue', hint: 'Call within 15 minutes' },
+    { label: 'Untouched New Leads', value: scopedLeads.filter(isUntouched).length, icon: Phone, color: 'blue', hint: `${sla.length} past the ${dataStore.settingNumber('lead_sla_minutes', 15)}-minute limit` },
     { label: 'Follow-ups Due Today', value: scopedLeads.filter(isDueToday).length, icon: PhoneCall, color: 'green', hint: 'Scheduled for today' },
     { label: 'Overdue Follow-ups', value: scopedLeads.filter(isOverdue).length, icon: AlertTriangle, color: 'red', hint: 'Past the promised call-back' },
     { label: 'Site Visits Fixed', value: visitsFixed, icon: Calendar, color: 'orange', hint: `Contact rate ${scopedLeads.length ? Math.round((contacted / scopedLeads.length) * 100) : 0}%` },
@@ -141,8 +148,9 @@ export function TelecallerDashboard() {
             </select>
           )}
           <div className="text-right">
-            <div className="text-sm text-gray-600">Monthly lead target</div>
-            <div className="text-gray-900 mt-1">{scopedLeads.length} / {target}</div>
+            <div className="text-sm text-gray-600">Visits booked this month</div>
+            <div className="text-gray-900 mt-1">{visitsThisMonth} / {target}</div>
+            <div className="text-xs text-gray-500">{callsToday} calls logged today</div>
           </div>
         </div>
       </div>
@@ -150,6 +158,12 @@ export function TelecallerDashboard() {
       {!manager && me?.status === 'Inactive' && (
         <div className="p-4 bg-red-50 border border-red-200 rounded-lg text-sm text-red-800">
           This telecaller is marked inactive. Their open leads should be reassigned from the Lead Pool.
+        </div>
+      )}
+
+      {sla.length > 0 && (
+        <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-900">
+          <b>{sla.length} new lead{sla.length > 1 ? 's' : ''}</b> waiting more than {dataStore.settingNumber('lead_sla_minutes', 15)} minutes for a first call: {sla.slice(0, 4).map(l => l.name).join(', ')}{sla.length > 4 ? '…' : ''}. They are at the top of the list below.
         </div>
       )}
 
@@ -264,7 +278,7 @@ export function TelecallerDashboard() {
                 {manager && <th className="text-left py-3 px-4 text-sm text-gray-600">Telecaller</th>}
                 <th className="text-left py-3 px-4 text-sm text-gray-600">Mobile</th>
                 <th className="text-left py-3 px-4 text-sm text-gray-600">Project</th>
-                <th className="text-left py-3 px-4 text-sm text-gray-600">Priority</th>
+                <th className="text-left py-3 px-4 text-sm text-gray-600">Score</th>
                 <th className="text-left py-3 px-4 text-sm text-gray-600">Status</th>
                 <th className="text-left py-3 px-4 text-sm text-gray-600">Last Call</th>
                 <th className="text-left py-3 px-4 text-sm text-gray-600">Attempts</th>
@@ -276,7 +290,7 @@ export function TelecallerDashboard() {
               {myLeads.length === 0 && (
                 <tr><td colSpan={11} className="py-8 text-center text-gray-500">No open leads assigned.</td></tr>
               )}
-              {myLeads.map((lead) => (
+              {myLeads.slice(0, 100).map((lead) => (
                 <tr key={lead.id} className="border-b border-gray-100 hover:bg-gray-50">
                   <td className="py-4 px-4">
                     <span className="text-blue-600">{lead.id}</span>
@@ -286,7 +300,8 @@ export function TelecallerDashboard() {
                   <td className="py-4 px-4 text-gray-600">{lead.mobile}</td>
                   <td className="py-4 px-4 text-gray-600">{lead.project}</td>
                   <td className="py-4 px-4">
-                    <span className={`inline-flex px-2 py-1 rounded text-xs ${getPriorityColor(lead.priority)}`}>{lead.priority}</span>
+                    <span title={lead.score.reasons.join('\n')}><Badge tone={lead.score.band === 'Hot' ? 'red' : lead.score.band === 'Warm' ? 'orange' : 'blue'}>{lead.score.score}</Badge></span>
+                    <span className={`ml-1 inline-flex px-1.5 py-0.5 rounded text-[10px] ${getPriorityColor(lead.priority)}`}>{lead.priority}</span>
                   </td>
                   <td className="py-4 px-4">
                     <span className={`inline-flex px-2 py-1 rounded text-xs ${getStatusColor(lead.status)}`}>{lead.status}</span>
@@ -316,6 +331,7 @@ export function TelecallerDashboard() {
                       <button className="px-3 py-1 text-xs bg-purple-50 text-purple-600 rounded hover:bg-purple-100" onClick={() => handleScheduleVisit(lead)}>
                         Visit
                       </button>
+                      <ContactButtons compact mobile={lead.mobile} name={lead.name} leadId={lead.id} message={`Hello ${lead.name}, this is ${persona.name} from ${dataStore.setting('company_name', 'GENXA Developers')} regarding ${lead.project}.`} />
                     </div>
                   </td>
                 </tr>

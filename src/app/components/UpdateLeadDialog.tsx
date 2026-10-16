@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { X, Save } from 'lucide-react';
 import { getDataStore } from '../lib/dataStore';
+import { localDate } from '../lib/dataStore';
 import { toast } from 'sonner';
 
 interface UpdateLeadDialogProps {
@@ -22,6 +23,11 @@ export function UpdateLeadDialog({ lead, onClose, onSuccess }: UpdateLeadDialogP
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    const fu = (formData.nextFollowUp || '').slice(0, 10);
+    if (fu && fu < localDate() && fu !== (lead.nextFollowUp || '').slice(0, 10)) {
+      toast.error('Next follow-up cannot be in the past');
+      return;
+    }
 
     dataStore.updateLead(lead.id, {
       status: formData.status,

@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { X, CheckCircle } from 'lucide-react';
 import { toast } from 'sonner';
-import { getDataStore, localDate } from '../lib/dataStore';
+import { getDataStore, localDate, toastError } from '../lib/dataStore';
+import { SendProposalDialog } from './LeadDialogs';
 
 interface LogVisitExecutionDialogProps {
   visit?: any;
@@ -21,63 +22,68 @@ export function LogVisitExecutionDialog({ visit, onClose, onSuccess }: LogVisitE
     revisitDate: ''
   });
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const [proposalLead, setProposalLead] = useState<any>(null);
+  const [saving, setSaving] = useState(false);
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
     if (!formData.unitsShown) {
       toast.error('Please enter units shown');
       return;
     }
+    if (formData.scheduleRevisit && (!formData.revisitDate || formData.revisitDate < localDate())) {
+      toast.error('Choose a re-visit date from today onwards');
+      return;
+    }
 
     const dataStore = getDataStore();
-
-    // Convert UI interest level to data model outcome type
     let outcome: 'Very Interested' | 'Interested' | 'Not Interested' = 'Interested';
     if (formData.interestLevel === 'Very Interested') outcome = 'Very Interested';
     else if (formData.interestLevel === 'Not Interested') outcome = 'Not Interested';
-    else outcome = 'Interested';
 
-    if (visit) {
-      const currentNotes = visit.notes || '';
-      const executionNotes = `
-        Visit Execution Log:
-        Units Shown: ${formData.unitsShown}
-        Interest Level: ${formData.interestLevel}
-        Objections: ${formData.objections}
-        Visit Notes: ${formData.visitNotes}
-        Next Action: ${formData.nextAction}
-        `;
-
-      dataStore.updateVisit(visit.id, {
-        status: 'Completed',
-        outcome: outcome,
-        unitsShown: formData.unitsShown,
-        notes: currentNotes + executionNotes
+    if (!visit) return;
+    setSaving(true);
+    try {
+      const log = [
+        `Visit done ${localDate()}: units shown ${formData.unitsShown}; ${formData.interestLevel}`,
+        formData.objections && `objections: ${formData.objections}`,
+        formData.visitNotes, formData.nextAction && `next: ${formData.nextAction}`,
+      ].filter(Boolean).join('; ');
+      await dataStore.patch('visits', visit.id, {
+        status: 'Completed', outcome, unitsShown: formData.unitsShown,
+        notes: [visit.notes, log].filter(Boolean).join('\n'),
       });
 
-      if (visit.leadId && visit.leadId !== 'NEW') {
-        if (formData.scheduleRevisit && formData.revisitDate) {
-          dataStore.updateLead(visit.leadId, {
-            status: 'Follow-up',
-            nextFollowUp: formData.revisitDate
-          });
-        }
+      const lead = visit.leadId && visit.leadId !== 'NEW' ? dataStore.getLeads().find(l => l.id === visit.leadId) : undefined;
+      if (lead && lead.status !== 'Booked') {
+        await dataStore.patch('leads', lead.id, {
+          status: outcome === 'Not Interested' ? 'Follow-up' : 'Qualified',
+          priority: outcome === 'Very Interested' ? 'Hot' : outcome === 'Interested' ? 'Warm' : 'Cold',
+          nextFollowUp: formData.scheduleRevisit ? formData.revisitDate : undefined,
+          lastContactedAt: new Date().toISOString(),
+        });
       }
+      if (formData.scheduleRevisit) {
+        const revisit = await dataStore.addVisit({
+          leadId: visit.leadId, customer: visit.customer, mobile: visit.mobile, project: visit.project, date: formData.revisitDate,
+          time: visit.time || '11:00', status: 'Scheduled', telecaller: visit.telecaller, salesExec: visit.salesExec,
+          confirmationSent: false, notes: `Re-visit after ${visit.id}`,
+        });
+        toast.success(`Re-visit ${revisit.id} booked for ${formData.revisitDate}`);
+      }
+      toast.success('Visit outcome saved');
+      onSuccess();
+      if (formData.sendProposal && lead) setProposalLead({ id: lead.id, customer: lead.name, mobile: lead.mobile, project: lead.project });
+      else onClose();
+    } catch (err) {
+      toastError(err, 'Could not save the visit');
+    } finally {
+      setSaving(false);
     }
-
-    toast.success('Visit execution logged successfully');
-
-    if (formData.sendProposal) {
-      toast.info('Proposal will be sent to customer');
-    }
-
-    if (formData.scheduleRevisit) {
-      toast.info('Re-visit scheduled successfully');
-    }
-
-    onSuccess();
-    onClose();
   };
+
+  if (proposalLead) return <SendProposalDialog lead={proposalLead} onClose={onClose} />;
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">

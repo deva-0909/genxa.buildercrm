@@ -1,280 +1,194 @@
-import { Bell, Mail, MessageSquare, Send, CheckCircle, Clock, Plus } from 'lucide-react';
 import { useState } from 'react';
-import { Button } from './ui/button';
+import { Bell, Send, MessageCircle, Mail, Smartphone, CheckCircle, Clock, XCircle, Plus, CalendarClock } from 'lucide-react';
 import { toast } from 'sonner';
+import { getDataStore, NotificationRecord, toastError } from '../lib/dataStore';
+import { liveBookings, bookingFinance } from '../lib/crm';
+import { fmtDateTime, fmtDate, waLink, inr, addDays, today } from '../lib/format';
+import { PageHeader, StatCard, Panel, Tabs, Badge, thCls, tdCls, btnPrimary, btnSecondary, btnSmall, btnSmallPrimary, inputCls, EmptyState, Modal, Field, Spinner } from './common';
 
-interface Notification {
-  id: string;
-  type: 'SMS' | 'Email' | 'WhatsApp';
-  recipient: string;
-  template: string;
-  message: string;
-  status: 'Sent' | 'Pending' | 'Failed' | 'Scheduled';
-  sentAt?: string;
-  scheduledFor?: string;
-  deliveryStatus?: 'Delivered' | 'Read' | 'Failed';
+const CHANNEL_ICON: Record<string, any> = { WhatsApp: MessageCircle, SMS: Smartphone, Email: Mail, 'In-app': Bell };
+
+export const TEMPLATES: { name: string; channel: string; text: string }[] = [
+  { name: 'Visit Confirmation', channel: 'WhatsApp', text: 'Hello {name}, your site visit to {project} is confirmed for {date} at {time}. Our executive {exec} will meet you. Location: {location}.' },
+  { name: 'Visit Reminder', channel: 'WhatsApp', text: 'Hello {name}, a reminder of your visit to {project} tomorrow at {time}. Reply 1 to confirm or 2 to reschedule.' },
+  { name: 'Payment Reminder', channel: 'WhatsApp', text: 'Dear {name}, {amount} for unit {unit}, {project} is due by {due}. Please quote booking {booking}.' },
+  { name: 'Booking Confirmation', channel: 'WhatsApp', text: 'Dear {name}, congratulations on booking {unit} at {project}. Your booking ID is {booking}. Our CRM team will share the next steps.' },
+  { name: 'Construction Update', channel: 'WhatsApp', text: 'Dear {name}, construction update for {project}: {update}.' },
+  { name: 'Festive Greeting', channel: 'WhatsApp', text: 'Dear {name}, warm wishes from all of us at {company}!' },
+];
+
+export function fill(text: string, vars: Record<string, string | undefined>) {
+  return text.replace(/\{(\w+)\}/g, (_, k) => vars[k] ?? `{${k}}`);
+}
+
+/** Open the right app for a message and mark it sent. */
+export async function sendNow(n: NotificationRecord) {
+  const store = getDataStore();
+  const contact = n.recipientContact || '';
+  if (n.channel === 'WhatsApp') window.open(waLink(contact, n.message), '_blank');
+  else if (n.channel === 'SMS') window.open(`sms:+91${contact.replace(/\D/g, '').slice(-10)}?body=${encodeURIComponent(n.message)}`, '_self');
+  else if (n.channel === 'Email') window.open(`mailto:${contact.includes('@') ? contact : ''}?subject=${encodeURIComponent(n.template || 'Update')}&body=${encodeURIComponent(n.message)}`, '_self');
+  try {
+    await store.patch('notifications', n.id, { status: 'Sent', sentAt: new Date().toISOString(), sentBy: store.getPersona().name });
+  } catch (e) { toastError(e); }
 }
 
 export function NotificationCenter() {
-  const [activeTab, setActiveTab] = useState('all');
-  const [selectedType, setSelectedType] = useState('all');
+  const store = getDataStore();
+  const persona = store.getPersona();
+  const [tab, setTab] = useState('queue');
+  const [compose, setCompose] = useState(false);
+  const [channel, setChannel] = useState('');
+  const all = store.list<NotificationRecord>('notifications');
+  const queue = all.filter(n => ['Queued', 'Pending'].includes(n.status));
+  const rows = (tab === 'queue' ? queue : all).filter(n => !channel || n.channel === channel);
+  const sentToday = all.filter(n => n.sentAt && n.sentAt.slice(0, 10) === today()).length;
 
-  const [notifications] = useState<Notification[]>([
-    { id: 'N001', type: 'SMS', recipient: 'Vikram Singh (9876543214)', template: 'Site Visit Reminder', message: 'Reminder: Your site visit is scheduled for tomorrow at 11 AM...', status: 'Sent', sentAt: '2025-02-04 10:30', deliveryStatus: 'Delivered' },
-    { id: 'N002', type: 'WhatsApp', recipient: 'Meera Iyer (9876543217)', template: 'Payment Due', message: 'Dear Meera, Your payment of ₹16L is due on 5th Feb...', status: 'Sent', sentAt: '2025-02-04 09:15', deliveryStatus: 'Read' },
-    { id: 'N003', type: 'Email', recipient: 'rahul.sharma@email.com', template: 'Agreement Ready', message: 'Your sale agreement is ready for signature...', status: 'Sent', sentAt: '2025-02-04 08:00', deliveryStatus: 'Delivered' },
-    { id: 'N004', type: 'SMS', recipient: 'Anjali Desai (9876543215)', template: 'Possession Schedule', message: 'Your possession is scheduled for 15th Feb 2025...', status: 'Scheduled', scheduledFor: '2025-02-10 10:00' },
-    { id: 'N005', type: 'WhatsApp', recipient: 'Karan Mehta (9876543216)', template: 'Follow-up', message: 'Thank you for visiting our site. We have exciting offers...', status: 'Failed', sentAt: '2025-02-03 16:45', deliveryStatus: 'Failed' },
-  ]);
-
-  const templates = [
-    { name: 'Site Visit Reminder', type: 'SMS', category: 'Visit' },
-    { name: 'Payment Due', type: 'WhatsApp', category: 'Payment' },
-    { name: 'Agreement Ready', type: 'Email', category: 'Agreement' },
-    { name: 'Possession Schedule', type: 'SMS', category: 'Possession' },
-    { name: 'Follow-up', type: 'WhatsApp', category: 'Follow-up' },
-    { name: 'Welcome Email', type: 'Email', category: 'Onboarding' },
-    { name: 'Birthday Wishes', type: 'WhatsApp', category: 'Engagement' },
-    { name: 'Payment Confirmation', type: 'SMS', category: 'Payment' },
-  ];
-
-  const stats = [
-    { label: 'Sent Today', value: notifications.filter(n => n.status === 'Sent').length, icon: Send, color: 'green' },
-    { label: 'Scheduled', value: notifications.filter(n => n.status === 'Scheduled').length, icon: Clock, color: 'blue' },
-    { label: 'Failed', value: notifications.filter(n => n.status === 'Failed').length, icon: Bell, color: 'red' },
-    { label: 'Delivery Rate', value: '94.2%', icon: CheckCircle, color: 'purple' },
-  ];
-
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case 'Sent': return 'bg-green-100 text-green-700';
-      case 'Pending': return 'bg-yellow-100 text-yellow-700';
-      case 'Failed': return 'bg-red-100 text-red-700';
-      case 'Scheduled': return 'bg-blue-100 text-blue-700';
-      default: return 'bg-gray-100 text-gray-700';
-    }
-  };
-
-  const getTypeIcon = (type: string) => {
-    switch (type) {
-      case 'SMS': return MessageSquare;
-      case 'Email': return Mail;
-      case 'WhatsApp': return MessageSquare;
-      default: return Bell;
-    }
-  };
-
-  const getColorClasses = (color: string) => {
-    const colors: Record<string, { bg: string; text: string; icon: string }> = {
-      blue: { bg: 'bg-blue-50', text: 'text-blue-700', icon: 'text-blue-600' },
-      green: { bg: 'bg-green-50', text: 'text-green-700', icon: 'text-green-600' },
-      purple: { bg: 'bg-purple-50', text: 'text-purple-700', icon: 'text-purple-600' },
-      red: { bg: 'bg-red-50', text: 'text-red-700', icon: 'text-red-600' },
-    };
-    return colors[color];
-  };
-
-  const filteredNotifications = notifications.filter(n => {
-    const matchesTab = activeTab === 'all' || n.status === activeTab;
-    const matchesType = selectedType === 'all' || n.type === selectedType;
-    return matchesTab && matchesType;
-  });
-
-  const handleSendNotification = () => {
-    toast.success('Opening notification composer...');
-  };
-
-  const handleRetry = (_notificationId: string) => {
-    toast.success('Retrying notification send...');
+  const queueVisitReminders = async () => {
+    const tomorrow = addDays(today(), 1);
+    const visits = store.getVisits().filter(v => v.date === tomorrow && ['Scheduled', 'Confirmed', 'Tentative'].includes(v.status));
+    const already = new Set(all.filter(n => n.template === 'Visit Reminder' && n.scheduledFor === tomorrow).map(n => n.relatedId));
+    const todo = visits.filter(v => !already.has(v.id));
+    if (todo.length === 0) { toast.info('All of tomorrow\'s visits already have a reminder'); return; }
+    try {
+      await store.insertMany('notifications', todo.map(v => ({
+        channel: 'WhatsApp', recipientName: v.customer, recipientContact: v.mobile, template: 'Visit Reminder',
+        message: fill(TEMPLATES[1].text, { name: v.customer, project: v.project, time: v.time }), status: 'Queued',
+        relatedType: 'visit', relatedId: v.id, sentBy: persona.name, scheduledFor: tomorrow,
+      })));
+      toast.success(`${todo.length} visit reminders queued for tomorrow`);
+    } catch (e) { toastError(e); }
   };
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-gray-900">Notification Center</h2>
-          <p className="text-gray-600">Manage SMS, Email, and WhatsApp communications</p>
-        </div>
-        <Button className="bg-blue-600 hover:bg-blue-700 text-white" onClick={handleSendNotification}>
-          <Plus className="w-4 h-4 mr-2" />
-          Send Notification
-        </Button>
+      <PageHeader title="Notifications" subtitle="Every WhatsApp, SMS and email sent from the CRM, plus queued reminders. Messages open in WhatsApp / your mail app until a WhatsApp Business API key is connected."
+        actions={<>
+          <button className={btnSecondary} onClick={queueVisitReminders}><CalendarClock className="w-4 h-4" />Queue tomorrow's visit reminders</button>
+          <button className={btnPrimary} onClick={() => setCompose(true)}><Plus className="w-4 h-4" />New message</button>
+        </>} />
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <StatCard label="Waiting to send" value={queue.length} icon={Clock} tone="orange" />
+        <StatCard label="Sent today" value={sentToday} icon={Send} tone="blue" />
+        <StatCard label="Delivered / read" value={all.filter(n => ['Delivered', 'Read', 'Sent'].includes(n.status)).length} icon={CheckCircle} tone="green" />
+        <StatCard label="Failed" value={all.filter(n => n.status === 'Failed').length} icon={XCircle} tone="red" />
       </div>
-
-      {/* Stats Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        {stats.map((stat) => {
-          const Icon = stat.icon;
-          const colors = getColorClasses(stat.color);
-
-          return (
-            <div key={stat.label} className="bg-white p-6 rounded-lg border border-gray-200">
-              <div className="flex items-start justify-between">
-                <div>
-                  <p className="text-sm text-gray-600">{stat.label}</p>
-                  <p className="text-gray-900 mt-2">{stat.value}</p>
-                </div>
-                <div className={`p-3 rounded-lg ${colors.bg}`}>
-                  <Icon className={`w-6 h-6 ${colors.icon}`} />
-                </div>
+      <Panel>
+        <Tabs active={tab} onChange={setTab} tabs={[{ id: 'queue', label: 'To send', count: queue.length }, { id: 'log', label: 'All messages', count: all.length }, { id: 'templates', label: 'Templates', count: TEMPLATES.length }]} />
+        {tab !== 'templates' && (
+          <div className="p-3 flex gap-2">
+            <select className={`${inputCls} max-w-[180px]`} value={channel} onChange={e => setChannel(e.target.value)} aria-label="Channel"><option value="">All channels</option>{['WhatsApp', 'SMS', 'Email', 'In-app'].map(c => <option key={c}>{c}</option>)}</select>
+            {tab === 'queue' && queue.filter(n => n.channel !== 'In-app').length > 0 && (
+              <button className={btnSecondary} onClick={async () => { const first = rows.find(n => n.channel !== 'In-app'); if (first) await sendNow(first); }}><Send className="w-4 h-4" />Send next</button>
+            )}
+          </div>
+        )}
+        {tab === 'templates' ? (
+          <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-3">
+            {TEMPLATES.map(t => (
+              <div key={t.name} className="border border-gray-200 rounded-lg p-3">
+                <div className="flex items-center justify-between"><span className="text-sm text-gray-900">{t.name}</span><Badge tone="green">{t.channel}</Badge></div>
+                <p className="text-sm text-gray-600 mt-1">{t.text}</p>
               </div>
-            </div>
-          );
-        })}
-      </div>
-
-      {/* Message Templates */}
-      <div className="bg-white p-6 rounded-lg border border-gray-200">
-        <h3 className="text-gray-900 mb-4">Message Templates</h3>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
-          {templates.map((template, idx) => {
-            const Icon = getTypeIcon(template.type);
-            return (
-              <div key={idx} className="p-3 border border-gray-200 rounded-lg hover:border-blue-300 transition-colors cursor-pointer">
-                <div className="flex items-center gap-2 mb-1">
-                  <Icon className="w-4 h-4 text-blue-600" />
-                  <span className="text-sm text-gray-900">{template.name}</span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-xs text-gray-600">{template.type}</span>
-                  <span className="text-xs text-gray-500">{template.category}</span>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* Filters */}
-      <div className="bg-white p-4 rounded-lg border border-gray-200">
-        <div className="flex gap-4">
-          <select
-            value={selectedType}
-            onChange={(e) => setSelectedType(e.target.value)}
-            className="px-4 py-2 border border-gray-300 rounded-lg text-sm"
-          >
-            <option value="all">All Types</option>
-            <option value="SMS">SMS</option>
-            <option value="Email">Email</option>
-            <option value="WhatsApp">WhatsApp</option>
-          </select>
-        </div>
-      </div>
-
-      {/* Tabs and Notifications */}
-      <div className="bg-white rounded-lg border border-gray-200">
-        <div className="border-b border-gray-200">
-          <div className="flex gap-4 px-6">
-            {([
-              ['all', `All (${notifications.length})`],
-              ['Sent', `Sent (${notifications.filter(n => n.status === 'Sent').length})`],
-              ['Scheduled', `Scheduled (${notifications.filter(n => n.status === 'Scheduled').length})`],
-              ['Failed', `Failed (${notifications.filter(n => n.status === 'Failed').length})`],
-            ] as const).map(([key, label]) => (
-              <button
-                key={key}
-                onClick={() => setActiveTab(key)}
-                className={`py-4 px-2 border-b-2 transition-colors ${
-                  activeTab === key
-                    ? 'border-blue-600 text-blue-600'
-                    : 'border-transparent text-gray-600 hover:text-gray-900'
-                }`}
-              >
-                {label}
-              </button>
             ))}
+            <p className="text-xs text-gray-500 md:col-span-2">To send these automatically through the WhatsApp Business API, register them as message templates with Meta (Interakt, Gupshup or WATI can host the number) and add the API key under Master Setup → Integrations.</p>
           </div>
-        </div>
-
-        <div className="p-6">
-          <div className="space-y-4">
-            {filteredNotifications.map((notification) => {
-              const TypeIcon = getTypeIcon(notification.type);
-
-              return (
-                <div key={notification.id} className="border border-gray-200 rounded-lg p-4 hover:border-blue-300 transition-colors">
-                  <div className="flex items-start justify-between mb-3">
-                    <div className="flex-1">
-                      <div className="flex items-center gap-3 mb-2">
-                        <TypeIcon className="w-5 h-5 text-blue-600" />
-                        <span className="text-gray-900">{notification.recipient}</span>
-                        <span className={`px-2 py-1 rounded-full text-xs ${getStatusColor(notification.status)}`}>
-                          {notification.status}
-                        </span>
-                        {notification.deliveryStatus && (
-                          <span className="text-xs text-gray-600">• {notification.deliveryStatus}</span>
-                        )}
-                      </div>
-                      <div className="grid grid-cols-4 gap-4 text-sm mb-2">
-                        <div>
-                          <span className="text-gray-600">Type:</span>
-                          <div className="text-gray-900">{notification.type}</div>
-                        </div>
-                        <div>
-                          <span className="text-gray-600">Template:</span>
-                          <div className="text-gray-900">{notification.template}</div>
-                        </div>
-                        <div>
-                          <span className="text-gray-600">
-                            {notification.status === 'Scheduled' ? 'Scheduled For:' : 'Sent At:'}
-                          </span>
-                          <div className="text-gray-900">
-                            {notification.status === 'Scheduled' ? notification.scheduledFor : notification.sentAt}
-                          </div>
-                        </div>
-                      </div>
-                      <div className="text-sm text-gray-600 bg-gray-50 p-2 rounded">
-                        {notification.message}
-                      </div>
-                    </div>
-                    <div className="flex gap-2 ml-4">
-                      {notification.status === 'Failed' && (
-                        <Button size="sm" className="bg-blue-600 hover:bg-blue-700 text-white" onClick={() => handleRetry(notification.id)}>
-                          Retry
-                        </Button>
-                      )}
-                      <Button size="sm" variant="outline" onClick={() => toast.info('Viewing full notification...')}>
-                        View
-                      </Button>
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead className="bg-gray-50"><tr>{['Channel', 'To', 'Template', 'Message', 'Status', 'When', ''].map(h => <th key={h} className={thCls}>{h}</th>)}</tr></thead>
+              <tbody className="divide-y divide-gray-100">
+                {rows.slice(0, 300).map(n => {
+                  const Icon = CHANNEL_ICON[n.channel] || Bell;
+                  return (
+                    <tr key={n.id} className="align-top">
+                      <td className={tdCls}><span className="inline-flex items-center gap-1.5"><Icon className="w-4 h-4 text-gray-500" />{n.channel}</span></td>
+                      <td className={tdCls}>{n.recipientName || '—'}<div className="text-xs text-gray-500">{n.recipientContact}</div></td>
+                      <td className={`${tdCls} text-gray-600`}>{n.template || '—'}</td>
+                      <td className={`${tdCls} max-w-[380px]`}><span className="line-clamp-2 text-gray-700" title={n.message}>{n.message}</span></td>
+                      <td className={tdCls}><Badge tone={['Queued', 'Pending'].includes(n.status) ? 'orange' : undefined}>{n.status}</Badge></td>
+                      <td className={`${tdCls} text-xs text-gray-600 whitespace-nowrap`}>{n.sentAt ? fmtDateTime(n.sentAt) : n.scheduledFor ? `For ${fmtDate(n.scheduledFor)}` : fmtDateTime(n.createdAt)}<div>{n.sentBy}</div></td>
+                      <td className={tdCls}>{['Queued', 'Pending', 'Failed'].includes(n.status) && n.channel !== 'In-app' && <button className={btnSmallPrimary} onClick={() => sendNow(n)}><Send className="w-3.5 h-3.5" />Send</button>}
+                        {n.channel === 'In-app' && n.status !== 'Read' && <button className={btnSmall} onClick={() => store.patch('notifications', n.id, { status: 'Read' }).catch(toastError)}>Mark read</button>}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            {rows.length === 0 && <EmptyState>{tab === 'queue' ? 'Nothing waiting to be sent.' : 'No messages.'}</EmptyState>}
           </div>
-        </div>
-      </div>
-
-      {/* Bulk Send Section */}
-      <div className="bg-white p-6 rounded-lg border border-gray-200">
-        <h3 className="text-gray-900 mb-4">Bulk Communication</h3>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div className="p-4 border border-gray-200 rounded-lg text-center">
-            <MessageSquare className="w-8 h-8 text-blue-600 mx-auto mb-2" />
-            <div className="text-sm text-gray-900 mb-1">Bulk SMS</div>
-            <div className="text-xs text-gray-600 mb-3">Send to multiple customers</div>
-            <Button size="sm" variant="outline" className="w-full">
-              Send Bulk SMS
-            </Button>
-          </div>
-          <div className="p-4 border border-gray-200 rounded-lg text-center">
-            <Mail className="w-8 h-8 text-blue-600 mx-auto mb-2" />
-            <div className="text-sm text-gray-900 mb-1">Email Campaign</div>
-            <div className="text-xs text-gray-600 mb-3">Send promotional emails</div>
-            <Button size="sm" variant="outline" className="w-full">
-              Create Campaign
-            </Button>
-          </div>
-          <div className="p-4 border border-gray-200 rounded-lg text-center">
-            <MessageSquare className="w-8 h-8 text-green-600 mx-auto mb-2" />
-            <div className="text-sm text-gray-900 mb-1">WhatsApp Broadcast</div>
-            <div className="text-xs text-gray-600 mb-3">Broadcast to groups</div>
-            <Button size="sm" variant="outline" className="w-full">
-              Send Broadcast
-            </Button>
-          </div>
-        </div>
-      </div>
+        )}
+      </Panel>
+      {compose && <ComposeDialog onClose={() => setCompose(false)} />}
     </div>
+  );
+}
+
+function ComposeDialog({ onClose }: { onClose: () => void }) {
+  const store = getDataStore();
+  const persona = store.getPersona();
+  const projects = store.getProjects();
+  const [audience, setAudience] = useState<'one' | 'overdue' | 'project'>('one');
+  const [bookingId, setBookingId] = useState('');
+  const [project, setProject] = useState(projects[0]?.name || '');
+  const [channel, setChannel] = useState('WhatsApp');
+  const [template, setTemplate] = useState(TEMPLATES[3].name);
+  const [text, setText] = useState(TEMPLATES[3].text);
+  const [busy, setBusy] = useState(false);
+  const bookings = liveBookings();
+  const recipients = audience === 'one' ? bookings.filter(b => b.id === bookingId)
+    : audience === 'overdue' ? bookings.filter(b => bookingFinance(b).overdue > 0)
+      : bookings.filter(b => b.project === project);
+  const company = store.setting('company_name', 'GENXA Developers');
+  const varsFor = (b: typeof bookings[number]) => {
+    const f = bookingFinance(b);
+    const nd = f.nextDue;
+    return { name: b.customer, unit: b.unit, project: b.project, booking: b.id, company, amount: nd ? inr(nd.amount + nd.gst - nd.paid) : inr(0), due: nd ? fmtDate(nd.dueDate) : '' };
+  };
+  const send = async () => {
+    if (recipients.length === 0) { toast.error('No recipients selected'); return; }
+    if (!text.trim()) { toast.error('Write the message'); return; }
+    setBusy(true);
+    try {
+      const rows = recipients.map(b => ({
+        channel, recipientName: b.customer, recipientContact: b.mobile, template, message: fill(text, varsFor(b)),
+        status: recipients.length === 1 ? 'Sent' : 'Queued', relatedType: 'booking', relatedId: b.id, sentBy: persona.name,
+        sentAt: recipients.length === 1 ? new Date().toISOString() : undefined, scheduledFor: today(),
+      }));
+      const saved = await store.insertMany<NotificationRecord>('notifications', rows);
+      if (saved.length === 1) {
+        const n = saved[0];
+        if (channel === 'WhatsApp') window.open(waLink(n.recipientContact || '', n.message), '_blank');
+        else if (channel === 'SMS') window.open(`sms:+91${(n.recipientContact || '').slice(-10)}?body=${encodeURIComponent(n.message)}`, '_self');
+        else window.open(`mailto:?subject=${encodeURIComponent(template)}&body=${encodeURIComponent(n.message)}`, '_self');
+        toast.success('Message opened and logged');
+      } else toast.success(`${saved.length} messages queued. Send them from "To send".`);
+      onClose();
+    } catch (e) { toastError(e); } finally { setBusy(false); }
+  };
+  const preview = recipients[0] ? fill(text, varsFor(recipients[0])) : text;
+  return (
+    <Modal open onClose={onClose} title="New message" size="lg"
+      footer={<><button className={btnSecondary} onClick={onClose}>Cancel</button><button className={btnPrimary} onClick={send} disabled={busy}>{busy ? <Spinner /> : <Send className="w-4 h-4" />}{recipients.length > 1 ? `Queue ${recipients.length} messages` : 'Send'}</button></>}>
+      <div className="space-y-4">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <Field label="Send to">
+            <select className={inputCls} value={audience} onChange={e => setAudience(e.target.value as any)}>
+              <option value="one">One customer</option><option value="overdue">All customers with overdue dues</option><option value="project">All buyers in a project</option>
+            </select>
+          </Field>
+          {audience === 'one' && <Field label="Customer"><select className={inputCls} value={bookingId} onChange={e => setBookingId(e.target.value)}><option value="">Select</option>{bookings.map(b => <option key={b.id} value={b.id}>{b.customer} · {b.unit}</option>)}</select></Field>}
+          {audience === 'project' && <Field label="Project"><select className={inputCls} value={project} onChange={e => setProject(e.target.value)}>{projects.map(p => <option key={p.id}>{p.name}</option>)}</select></Field>}
+          <Field label="Channel"><select className={inputCls} value={channel} onChange={e => setChannel(e.target.value)}><option>WhatsApp</option><option>SMS</option><option>Email</option></select></Field>
+        </div>
+        <Field label="Template">
+          <select className={inputCls} value={template} onChange={e => { setTemplate(e.target.value); setText(TEMPLATES.find(t => t.name === e.target.value)?.text || text); }}>
+            {TEMPLATES.map(t => <option key={t.name}>{t.name}</option>)}
+          </select>
+        </Field>
+        <Field label="Message" hint="Placeholders: {name} {unit} {project} {booking} {amount} {due} {company}"><textarea rows={4} className={inputCls} value={text} onChange={e => setText(e.target.value)} /></Field>
+        <div className="p-3 rounded-lg bg-green-50 border border-green-200 text-sm"><div className="text-xs text-gray-500 mb-1">Preview{recipients.length > 1 ? ` (1 of ${recipients.length})` : ''}</div>{preview}</div>
+      </div>
+    </Modal>
   );
 }

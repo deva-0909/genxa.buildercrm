@@ -1,279 +1,156 @@
-import { TrendingUp, Users, Calendar, Building2, DollarSign, Phone, CheckCircle, Target } from 'lucide-react';
-import { getDataStore, localDate } from '../lib/dataStore';
-import { BarChart, Bar, LineChart, Line, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import { useState } from 'react';
+import { BarChart, Bar, Line, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ComposedChart } from 'recharts';
+import { Users, Calendar, Building2, IndianRupee, PhoneMissed, Target, ShieldCheck, Wallet, TrendingUp, AlertTriangle } from 'lucide-react';
+import { getDataStore, Approval } from '../lib/dataStore';
+import { monthlySeries, sourcePerformance } from '../lib/analytics';
+import { forecast, slaBreaches, liveBookings, bookingFinance } from '../lib/crm';
+import { inrShort, today } from '../lib/format';
+import { PageHeader, StatCard, Panel, thCls, tdCls, inputCls, Badge } from './common';
 
-export function ManagementDashboard() {
+const COLORS = ['#2563eb', '#16a34a', '#f59e0b', '#8b5cf6', '#ef4444', '#06b6d4', '#64748b', '#ec4899', '#84cc16'];
+
+export function ManagementDashboard({ onNavigate }: { onNavigate?: (id: string) => void }) {
   const store = getDataStore();
-  const leads = store.getLeads();
-  const visits = store.getVisits();
-  const bookings = store.getBookings();
-  const sources = store.getSources();
+  const [project, setProject] = useState('');
+  const leads = store.getLeads().filter(l => !project || l.project === project);
+  const visits = store.getVisits().filter(v => !project || v.project === project);
+  const bookings = liveBookings().filter(b => !project || b.project === project);
+  const months = monthlySeries(6, project);
+  const sources = sourcePerformance(project);
+  const fc = forecast();
+  const sla = slaBreaches(leads);
+  const approvals = store.list<Approval>('approvals').filter(a => a.status === 'Pending');
+  const fin = bookings.map(bookingFinance);
+  const value = bookings.reduce((s, b) => s + b.price - b.discount, 0);
+  const collected = fin.reduce((s, f) => s + f.paid, 0);
+  const overdue = fin.reduce((s, f) => s + f.overdue, 0);
+  const completed = visits.filter(v => v.status === 'Completed').length;
+  const contacted = leads.filter(l => (l.callAttempts || 0) > 0 || l.status !== 'New').length;
+  const spend = sources.reduce((s, r) => s + r.spend, 0);
+  const t = today();
+  const followOverdue = leads.filter(l => l.nextFollowUp && l.nextFollowUp.slice(0, 10) < t && !['Dead', 'Booked'].includes(l.status)).length;
+  const cur = months[months.length - 1];
+  const prev = months[months.length - 2];
+  const delta = (a: number, b: number) => b ? `${a >= b ? '▲' : '▼'} ${Math.abs(Math.round((a - b) / b * 100))}% vs last month` : '';
 
-  const pct = (n: number, d: number) => (d ? (n / d) * 100 : 0);
-  const contactedCount = leads.filter(l => (l.callAttempts || 0) > 0 || l.status !== 'New').length;
-  const qualifiedCount = leads.filter(l => ['Qualified', 'Visit Scheduled'].includes(l.status)).length + bookings.length;
-  const visitLeadIds = new Set(visits.filter(v => v.status !== 'Cancelled').map(v => v.leadId));
-  const completedVisits = visits.filter(v => v.status === 'Completed').length;
-  const revenue = bookings.reduce((s, b) => s + (b.price - b.discount), 0);
-  const marketingSpend = leads.reduce((s, l) => s + (sources.find(src => src.name === l.source)?.costPerLead || 0), 0);
-  const unassigned = leads.filter(l => !l.assignedTo).length;
-  const todayStr = localDate();
-  const overdue = leads.filter(l => l.nextFollowUp && l.nextFollowUp.slice(0, 10) < todayStr && l.status !== 'Dead').length;
-
-  const kpiCards = [
-    { label: 'Total Leads', value: leads.length.toLocaleString('en-IN'), change: `${unassigned} unassigned`, trend: 'up', icon: Users, color: 'blue' },
-    { label: 'Site Visits', value: String(visits.length), change: `${completedVisits} completed`, trend: 'up', icon: Calendar, color: 'green' },
-    { label: 'Bookings', value: String(bookings.length), change: `${pct(bookings.length, completedVisits).toFixed(0)}% of completed visits`, trend: 'up', icon: Building2, color: 'purple' },
-    { label: 'Revenue (₹Cr)', value: (revenue / 10000000).toFixed(2), change: `Avg ₹${bookings.length ? (revenue / bookings.length / 100000).toFixed(1) : 0}L / booking`, trend: 'up', icon: DollarSign, color: 'orange' },
-    { label: 'Contact Rate', value: `${pct(contactedCount, leads.length).toFixed(0)}%`, change: 'Leads called at least once', trend: 'up', icon: Phone, color: 'cyan' },
-    { label: 'Conversion Rate', value: `${pct(bookings.length, leads.length).toFixed(1)}%`, change: 'Lead → booking', trend: 'up', icon: Target, color: 'pink' },
-    { label: 'Overdue Follow-ups', value: String(overdue), change: 'Past promised call-back', trend: 'up', icon: CheckCircle, color: 'indigo' },
-    { label: 'CAC (₹)', value: bookings.length ? Math.round(marketingSpend / bookings.length).toLocaleString('en-IN') : '—', change: `Spend ₹${(marketingSpend / 1000).toFixed(1)}k on paid leads`, trend: 'up', icon: TrendingUp, color: 'red' },
-  ];
-
-  const funnelData = [
+  const funnel = [
     { stage: 'Leads', count: leads.length },
-    { stage: 'Contacted', count: contactedCount },
-    { stage: 'Qualified', count: qualifiedCount },
-    { stage: 'Site Visit', count: visitLeadIds.size },
-    { stage: 'Visit Done', count: completedVisits },
-    { stage: 'Booking', count: bookings.length },
+    { stage: 'Contacted', count: contacted },
+    { stage: 'Qualified+', count: leads.filter(l => ['Qualified', 'Visit Scheduled', 'Booked'].includes(l.status)).length },
+    { stage: 'Visit done', count: new Set(visits.filter(v => v.status === 'Completed').map(v => v.leadId)).size },
+    { stage: 'Booked', count: bookings.length },
   ];
-
-  const monthlyTrend = [
-    { month: 'Jul', leads: 380, visits: 65, bookings: 18, revenue: 6.2 },
-    { month: 'Aug', leads: 420, visits: 72, bookings: 21, revenue: 7.8 },
-    { month: 'Sep', leads: 450, visits: 78, bookings: 19, revenue: 6.9 },
-    { month: 'Oct', leads: 485, visits: 85, bookings: 24, revenue: 8.5 },
-    { month: 'Nov', leads: 512, visits: 91, bookings: 22, revenue: 8.1 },
-    { month: 'Dec', leads: 600, visits: 95, bookings: 23, revenue: 8.1 },
-  ];
-
-  const sourceGroup = (src: string) =>
-    /^CP\d|channel/i.test(src) ? 'Channel Partners'
-      : /walk/i.test(src) ? 'Walk-In'
-      : /housing|magic|99acres/i.test(src) ? 'Portals'
-      : /ads|google|facebook/i.test(src) ? 'Digital Marketing'
-      : 'Other';
-  const sourceColors: Record<string, string> = {
-    'Digital Marketing': '#3b82f6', 'Channel Partners': '#8b5cf6', 'Walk-In': '#10b981', 'Portals': '#f59e0b', 'Other': '#94a3b8',
-  };
-  const sourceData = Object.entries(
-    leads.reduce<Record<string, number>>((acc, l) => { const g = sourceGroup(l.source || ''); acc[g] = (acc[g] || 0) + 1; return acc; }, {})
-  ).map(([name, value]) => ({ name, value, color: sourceColors[name] }));
-
-  const projectPerformance = store.getProjects().map(p => {
-    const pb = bookings.filter(b => b.project === p.name);
+  const projects = store.getProjects().filter(p => !project || p.name === project).map(p => {
+    const units = store.getUnits().filter(u => u.project === p.name);
+    const pb = liveBookings().filter(b => b.project === p.name);
     return {
-      project: p.name,
-      leads: leads.filter(l => l.project === p.name).length,
-      visits: visits.filter(v => v.project === p.name).length,
-      bookings: pb.length,
-      revenue: +(pb.reduce((s, b) => s + (b.price - b.discount), 0) / 10000000).toFixed(2),
+      project: p.name, leads: store.getLeads().filter(l => l.project === p.name).length, bookings: pb.length,
+      sold: units.length ? Math.round(units.filter(u => u.status === 'Booked').length / units.length * 100) : 0,
+      value: pb.reduce((s, b) => s + b.price - b.discount, 0), collected: pb.reduce((s, b) => s + bookingFinance(b).paid, 0),
     };
   });
 
-  const getColorClasses = (color: string) => {
-    const colors: Record<string, { bg: string; text: string; icon: string }> = {
-      blue: { bg: 'bg-blue-50', text: 'text-blue-700', icon: 'text-blue-600' },
-      green: { bg: 'bg-green-50', text: 'text-green-700', icon: 'text-green-600' },
-      purple: { bg: 'bg-purple-50', text: 'text-purple-700', icon: 'text-purple-600' },
-      orange: { bg: 'bg-orange-50', text: 'text-orange-700', icon: 'text-orange-600' },
-      cyan: { bg: 'bg-cyan-50', text: 'text-cyan-700', icon: 'text-cyan-600' },
-      pink: { bg: 'bg-pink-50', text: 'text-pink-700', icon: 'text-pink-600' },
-      indigo: { bg: 'bg-indigo-50', text: 'text-indigo-700', icon: 'text-indigo-600' },
-      red: { bg: 'bg-red-50', text: 'text-red-700', icon: 'text-red-600' },
-    };
-    return colors[color] || colors.blue;
-  };
-
   return (
     <div className="space-y-6">
-      <div>
-        <h2 className="text-gray-900">Management Dashboard</h2>
-        <p className="text-gray-600">Consolidated Lead → Visit → Booking → Revenue Funnel</p>
-      </div>
+      <PageHeader title="Management Dashboard" subtitle="Lead → visit → booking → collection, live from the CRM."
+        actions={<select className={`${inputCls} sm:max-w-[13rem]`} value={project} onChange={e => setProject(e.target.value)} aria-label="Project"><option value="">All projects</option>{store.getProjects().map(p => <option key={p.id}>{p.name}</option>)}</select>} />
 
-      {/* KPI Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        {kpiCards.map((kpi) => {
-          const Icon = kpi.icon;
-          const colors = getColorClasses(kpi.color);
-          return (
-            <div key={kpi.label} className="bg-white p-6 rounded-lg border border-gray-200">
-              <div className="flex items-start justify-between">
-                <div>
-                  <p className="text-sm text-gray-600">{kpi.label}</p>
-                  <p className="text-gray-900 mt-2">{kpi.value}</p>
-                  <p className={`text-sm mt-1 ${colors.text}`}>{kpi.change}</p>
-                </div>
-                <div className={`p-3 rounded-lg ${colors.bg}`}>
-                  <Icon className={`w-6 h-6 ${colors.icon}`} />
-                </div>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      {/* Funnel Visualization */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div className="bg-white p-6 rounded-lg border border-gray-200">
-          <h3 className="text-gray-900 mb-4">Sales Funnel - Live</h3>
-          <ResponsiveContainer width="100%" height={300}>
-            <BarChart data={funnelData}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="stage" />
-              <YAxis />
-              <Tooltip />
-              <Legend />
-              <Bar dataKey="count" fill="#3b82f6" name="Count" />
-            </BarChart>
-          </ResponsiveContainer>
-          <div className="mt-4 grid grid-cols-3 gap-4 text-center">
-            <div>
-              <div className="text-xs text-gray-500">Lead→Visit</div>
-              <div className="text-gray-900">{pct(visitLeadIds.size, leads.length).toFixed(1)}%</div>
-            </div>
-            <div>
-              <div className="text-xs text-gray-500">Visit→Booking</div>
-              <div className="text-gray-900">{pct(bookings.length, completedVisits).toFixed(1)}%</div>
-            </div>
-            <div>
-              <div className="text-xs text-gray-500">Overall Conv.</div>
-              <div className="text-gray-900">{pct(bookings.length, leads.length).toFixed(1)}%</div>
-            </div>
-          </div>
+      {(sla.length > 0 || approvals.length > 0) && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          {sla.length > 0 && (
+            <button onClick={() => onNavigate?.('lead-pool')} className="flex items-center gap-3 p-3 rounded-lg bg-red-50 border border-red-200 text-left">
+              <PhoneMissed className="w-5 h-5 text-red-600" />
+              <span className="text-sm text-red-900"><b>{sla.length} new lead{sla.length > 1 ? 's' : ''}</b> not called within {store.settingNumber('lead_sla_minutes', 15)} minutes. Open Lead Pool.</span>
+            </button>
+          )}
+          {approvals.length > 0 && (
+            <button onClick={() => onNavigate?.('approvals')} className="flex items-center gap-3 p-3 rounded-lg bg-orange-50 border border-orange-200 text-left">
+              <ShieldCheck className="w-5 h-5 text-orange-600" />
+              <span className="text-sm text-orange-900"><b>{approvals.length} approval{approvals.length > 1 ? 's' : ''}</b> waiting: {approvals.filter(a => a.type === 'Discount').length} discount, {approvals.filter(a => a.type === 'Cancellation').length} cancellation.</span>
+            </button>
+          )}
         </div>
+      )}
 
-        <div className="bg-white p-6 rounded-lg border border-gray-200">
-          <h3 className="text-gray-900 mb-4">Lead Sources Distribution</h3>
-          <ResponsiveContainer width="100%" height={300}>
-            <PieChart>
-              <Pie
-                data={sourceData}
-                cx="50%"
-                cy="50%"
-                labelLine={false}
-                label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
-                outerRadius={100}
-                fill="#8884d8"
-                dataKey="value"
-              >
-                {sourceData.map((entry, index) => (
-                  <Cell key={`cell-${index}`} fill={entry.color} />
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <StatCard label="Leads this month" value={cur?.leads ?? 0} icon={Users} hint={prev ? delta(cur.leads, prev.leads) : undefined} />
+        <StatCard label="Visits done this month" value={cur?.visits ?? 0} icon={Calendar} tone="green" hint={prev ? delta(cur.visits, prev.visits) : undefined} />
+        <StatCard label="Bookings this month" value={cur?.bookings ?? 0} icon={Building2} tone="purple" hint={`₹${cur?.bookingValueCr ?? 0} Cr · ${bookings.length} live in total`} />
+        <StatCard label="Collected this month" value={`₹${((cur?.collectedL ?? 0) / 100).toFixed(2)} Cr`} icon={Wallet} tone="orange" hint={prev ? delta(cur.collectedL, prev.collectedL) : undefined} />
+        <StatCard label="Booking value (live)" value={inrShort(value)} icon={IndianRupee} tone="blue" hint={`${inrShort(collected)} collected · ${inrShort(overdue)} overdue`} />
+        <StatCard label="Lead → booking" value={`${leads.length ? (bookings.length / leads.length * 100).toFixed(1) : 0}%`} icon={Target} tone="purple" hint={`${completed ? (bookings.length / completed * 100).toFixed(0) : 0}% of completed visits`} />
+        <StatCard label="Overdue follow-ups" value={followOverdue} icon={AlertTriangle} tone="red" hint="Promised call-backs missed" />
+        <StatCard label="Cost per booking" value={bookings.length ? inrShort(spend / bookings.length) : '—'} icon={TrendingUp} hint={`${inrShort(spend)} on paid leads`} />
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <Panel title="Monthly trend">
+          <div className="p-4 h-72">
+            <ResponsiveContainer width="100%" height="100%">
+              <ComposedChart data={months}><CartesianGrid strokeDasharray="3 3" vertical={false} /><XAxis dataKey="month" tick={{ fontSize: 12 }} />
+                <YAxis yAxisId="l" tick={{ fontSize: 12 }} /><YAxis yAxisId="r" orientation="right" tick={{ fontSize: 12 }} /><Tooltip /><Legend />
+                <Bar yAxisId="l" dataKey="leads" name="Leads" fill="#bfdbfe" /><Line yAxisId="r" dataKey="visits" name="Visits done" stroke="#16a34a" strokeWidth={2} />
+                <Line yAxisId="r" dataKey="bookings" name="Bookings" stroke="#7c3aed" strokeWidth={2} />
+              </ComposedChart>
+            </ResponsiveContainer>
+          </div>
+        </Panel>
+        <Panel title="Booked vs collected (₹ lakh)">
+          <div className="p-4 h-72">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={months.map(m => ({ ...m, bookedL: Math.round(m.bookingValueCr * 100) }))}><CartesianGrid strokeDasharray="3 3" vertical={false} /><XAxis dataKey="month" tick={{ fontSize: 12 }} /><YAxis tick={{ fontSize: 12 }} /><Tooltip /><Legend />
+                <Bar dataKey="bookedL" name="Booked" fill="#8b5cf6" /><Bar dataKey="demandedL" name="Demanded" fill="#cbd5e1" /><Bar dataKey="collectedL" name="Collected" fill="#16a34a" />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </Panel>
+        <Panel title="Funnel">
+          <div className="p-4 h-64">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={funnel} layout="vertical"><CartesianGrid strokeDasharray="3 3" horizontal={false} /><XAxis type="number" tick={{ fontSize: 12 }} /><YAxis dataKey="stage" type="category" width={90} tick={{ fontSize: 12 }} /><Tooltip />
+                <Bar dataKey="count" fill="#2563eb" label={{ position: 'right', fontSize: 12 }} /></BarChart>
+            </ResponsiveContainer>
+          </div>
+        </Panel>
+        <Panel title="Leads by source">
+          <div className="p-4 h-64">
+            <ResponsiveContainer width="100%" height="100%">
+              <PieChart><Pie data={sources} dataKey="leads" nameKey="source" outerRadius={90} label={(e: any) => e.source}>
+                {sources.map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}</Pie><Tooltip /></PieChart>
+            </ResponsiveContainer>
+          </div>
+        </Panel>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <Panel title="Pipeline forecast" className="lg:col-span-1">
+          <div className="p-4 space-y-3 text-sm">
+            <div className="flex justify-between"><span className="text-gray-600">Expected bookings from open leads</span><b>{fc.expectedBookings.toFixed(1)}</b></div>
+            <div className="flex justify-between"><span className="text-gray-600">Expected booking value</span><b>{inrShort(fc.expectedRevenue)}</b></div>
+            <div className="border-t border-gray-100 pt-2 text-xs text-gray-500">Collections expected</div>
+            {fc.collections.map(c => <div key={c.label} className="flex justify-between"><span className="text-gray-600">{c.label}</span><span className={c.label.startsWith('Overdue') ? 'text-red-700' : ''}>{inrShort(c.amount)}</span></div>)}
+            <p className="text-xs text-gray-500">Each open lead is weighted by its stage and lead score; collections come from the payment schedules.</p>
+          </div>
+        </Panel>
+        <Panel title="Projects" className="lg:col-span-2">
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead className="bg-gray-50"><tr>{['Project', 'Leads', 'Bookings', 'Sold', 'Value', 'Collected', 'Forecast'].map(h => <th key={h} className={thCls}>{h}</th>)}</tr></thead>
+              <tbody className="divide-y divide-gray-100">
+                {projects.map(p => (
+                  <tr key={p.project}>
+                    <td className={tdCls}>{p.project}</td><td className={tdCls}>{p.leads}</td><td className={tdCls}>{p.bookings}</td>
+                    <td className={tdCls}><Badge tone={p.sold > 50 ? 'green' : 'blue'}>{p.sold}%</Badge></td>
+                    <td className={`${tdCls} whitespace-nowrap`}>{inrShort(p.value)}</td><td className={`${tdCls} whitespace-nowrap`}>{inrShort(p.collected)}</td>
+                    <td className={`${tdCls} whitespace-nowrap text-gray-600`}>{(fc.byProject.find(x => x.project === p.project)?.expectedBookings || 0).toFixed(1)} bookings</td>
+                  </tr>
                 ))}
-              </Pie>
-              <Tooltip />
-            </PieChart>
-          </ResponsiveContainer>
-        </div>
-      </div>
-
-      {/* Monthly Trends */}
-      <div className="bg-white p-6 rounded-lg border border-gray-200">
-        <h3 className="text-gray-900 mb-4">6-Month Performance Trends <span className="text-xs text-gray-400">(sample data)</span></h3>
-        <ResponsiveContainer width="100%" height={300}>
-          <LineChart data={monthlyTrend}>
-            <CartesianGrid strokeDasharray="3 3" />
-            <XAxis dataKey="month" />
-            <YAxis />
-            <Tooltip />
-            <Legend />
-            <Line type="monotone" dataKey="leads" stroke="#3b82f6" name="Leads" strokeWidth={2} />
-            <Line type="monotone" dataKey="visits" stroke="#10b981" name="Visits" strokeWidth={2} />
-            <Line type="monotone" dataKey="bookings" stroke="#8b5cf6" name="Bookings" strokeWidth={2} />
-          </LineChart>
-        </ResponsiveContainer>
-      </div>
-
-      {/* Project Performance Table */}
-      <div className="bg-white p-6 rounded-lg border border-gray-200">
-        <h3 className="text-gray-900 mb-4">Project-wise Performance</h3>
-        <div className="overflow-x-auto">
-          <table className="w-full">
-            <thead>
-              <tr className="border-b border-gray-200">
-                <th className="text-left py-3 px-4 text-sm text-gray-600">Project</th>
-                <th className="text-right py-3 px-4 text-sm text-gray-600">Leads</th>
-                <th className="text-right py-3 px-4 text-sm text-gray-600">Site Visits</th>
-                <th className="text-right py-3 px-4 text-sm text-gray-600">Bookings</th>
-                <th className="text-right py-3 px-4 text-sm text-gray-600">Conversion %</th>
-                <th className="text-right py-3 px-4 text-sm text-gray-600">Revenue (₹Cr)</th>
-              </tr>
-            </thead>
-            <tbody>
-              {projectPerformance.map((project, index) => (
-                <tr key={index} className="border-b border-gray-100">
-                  <td className="py-3 px-4 text-gray-900">{project.project}</td>
-                  <td className="text-right py-3 px-4 text-gray-600">{project.leads}</td>
-                  <td className="text-right py-3 px-4 text-gray-600">{project.visits}</td>
-                  <td className="text-right py-3 px-4 text-gray-600">{project.bookings}</td>
-                  <td className="text-right py-3 px-4 text-gray-900">
-                    {pct(project.bookings, project.leads).toFixed(1)}%
-                  </td>
-                  <td className="text-right py-3 px-4 text-gray-900">{project.revenue}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      {/* Lead & Lag Indicators */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div className="bg-white p-6 rounded-lg border border-gray-200">
-          <h3 className="text-gray-900 mb-4">Lead Indicators (Predictive) <span className="text-xs text-gray-400">(sample data)</span></h3>
-          <div className="space-y-4">
-            <div className="flex justify-between items-center pb-4 border-b border-gray-100">
-              <span className="text-gray-600">New Lead Velocity</span>
-              <span className="text-green-600">+18% WoW</span>
-            </div>
-            <div className="flex justify-between items-center pb-4 border-b border-gray-100">
-              <span className="text-gray-600">Avg Response Time</span>
-              <span className="text-green-600">8 min (Target: 10)</span>
-            </div>
-            <div className="flex justify-between items-center pb-4 border-b border-gray-100">
-              <span className="text-gray-600">Contact Rate</span>
-              <span className="text-green-600">73% (Target: 70%)</span>
-            </div>
-            <div className="flex justify-between items-center pb-4 border-b border-gray-100">
-              <span className="text-gray-600">Visit Fix Rate</span>
-              <span className="text-yellow-600">23% (Target: 25%)</span>
-            </div>
-            <div className="flex justify-between items-center">
-              <span className="text-gray-600">Proposal Rate</span>
-              <span className="text-green-600">51% (Target: 48%)</span>
-            </div>
+              </tbody>
+            </table>
           </div>
-        </div>
-
-        <div className="bg-white p-6 rounded-lg border border-gray-200">
-          <h3 className="text-gray-900 mb-4">Lag Indicators (Outcome) <span className="text-xs text-gray-400">(sample data)</span></h3>
-          <div className="space-y-4">
-            <div className="flex justify-between items-center pb-4 border-b border-gray-100">
-              <span className="text-gray-600">Monthly Bookings</span>
-              <span className="text-gray-900">127 units</span>
-            </div>
-            <div className="flex justify-between items-center pb-4 border-b border-gray-100">
-              <span className="text-gray-600">Total Revenue</span>
-              <span className="text-gray-900">₹45.6 Cr</span>
-            </div>
-            <div className="flex justify-between items-center pb-4 border-b border-gray-100">
-              <span className="text-gray-600">Avg Deal Value</span>
-              <span className="text-gray-900">₹35.9 L</span>
-            </div>
-            <div className="flex justify-between items-center pb-4 border-b border-gray-100">
-              <span className="text-gray-600">Customer Acquisition Cost</span>
-              <span className="text-gray-900">₹12,450</span>
-            </div>
-            <div className="flex justify-between items-center">
-              <span className="text-gray-600">Marketing ROI</span>
-              <span className="text-green-600">3.8x</span>
-            </div>
-          </div>
-        </div>
+        </Panel>
       </div>
     </div>
   );
 }
+

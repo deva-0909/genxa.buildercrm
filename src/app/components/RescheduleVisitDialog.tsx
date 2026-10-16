@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { X, Calendar, Clock, AlertCircle } from 'lucide-react';
 import { toast } from 'sonner';
-import { getDataStore, localDate } from '../lib/dataStore';
+import { getDataStore, localDate, toastError } from '../lib/dataStore';
+import { fmtDate, waLink } from '../lib/format';
 
 interface RescheduleVisitDialogProps {
   visit: any;
@@ -17,9 +18,13 @@ export function RescheduleVisitDialog({ visit, onClose, onSuccess }: RescheduleV
     notifyCustomer: true
   });
 
-  const handleReschedule = () => {
+  const handleReschedule = async () => {
     if (!formData.newDate || !formData.newTime) {
       toast.error('Please select new date and time');
+      return;
+    }
+    if (formData.newDate < localDate() || new Date(`${formData.newDate}T${formData.newTime}`).getTime() < Date.now() - 5 * 60000) {
+      toast.error('The new date and time cannot be in the past');
       return;
     }
 
@@ -37,9 +42,19 @@ export function RescheduleVisitDialog({ visit, onClose, onSuccess }: RescheduleV
       updates.notes = currentNotes ? `${currentNotes}\n${newNote}` : newNote;
     }
 
-    dataStore.updateVisit(visit.id, updates);
+    try {
+      await dataStore.patch('visits', visit.id, updates);
+    } catch (err) {
+      toastError(err, 'Could not reschedule');
+      return;
+    }
+    if (formData.notifyCustomer && visit.mobile) {
+      const msg = `Hello ${visit.customer}, your site visit to ${visit.project} is rescheduled to ${fmtDate(formData.newDate)} at ${formData.newTime}. Reply to this message if you need a different time.`;
+      window.open(waLink(visit.mobile, msg), '_blank');
+      dataStore.insert('notifications', { channel: 'WhatsApp', recipientName: visit.customer, recipientContact: visit.mobile, template: 'Visit Rescheduled', message: msg, status: 'Sent', relatedType: 'visit', relatedId: visit.id, sentBy: dataStore.getPersona().name, sentAt: new Date().toISOString() }).catch(() => {});
+    }
 
-    toast.success(`Visit ${visit.id} rescheduled to ${formData.newDate} at ${formData.newTime}`);
+    toast.success(`Visit ${visit.id} rescheduled to ${fmtDate(formData.newDate)} at ${formData.newTime}`);
     onSuccess();
     onClose();
   };
